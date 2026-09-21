@@ -16,6 +16,7 @@ from batch_parser import create_batch_template, load_batch_items
 from jianying_service import create_jianying_draft
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_pricing, format_usage
+from publish_platforms import build_platform_posts
 from prompts import STYLE_PROMPTS, build_image_prompt
 
 
@@ -69,6 +70,33 @@ class CoreTests(unittest.TestCase):
         self.assertIn("1K $0.21/张", format_pricing(image_pricing))
         usage = {"prompt_tokens": 100, "completion_tokens": 50}
         self.assertIn("合计 150 Token", format_usage(usage))
+
+    def test_publish_platform_adaptation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            video = Path(temp) / "video.mp4"
+            video.write_bytes(b"not-a-real-video")
+            posts = build_platform_posts(
+                base_title="这是一个用于测试小红书标题截断和中文长度限制的超级长标题",
+                description="这是一段发布简介。" * 100,
+                raw_tags="肛周护理 久坐党 健康科普 湿厕纸",
+                media_paths=[video],
+                platform_keys=["douyin", "xiaohongshu", "bilibili"],
+            )
+            by_key = {post.platform.key: post for post in posts}
+            self.assertLessEqual(len(by_key["xiaohongshu"].title), 20)
+            self.assertTrue(by_key["douyin"].valid)
+            self.assertTrue(by_key["bilibili"].valid)
+
+            image = Path(temp) / "image.png"
+            image.write_bytes(b"not-a-real-image")
+            image_posts = build_platform_posts(
+                base_title="测试",
+                description="测试",
+                raw_tags="测试",
+                media_paths=[image],
+                platform_keys=["bilibili"],
+            )
+            self.assertFalse(image_posts[0].valid)
 
     def test_mock_image_and_video_pipeline(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -145,9 +173,10 @@ class CoreTests(unittest.TestCase):
         window = MainWindow()
         window.show()
         self.app.processEvents()
-        self.assertEqual(window.stack.count(), 6)
+        self.assertEqual(window.stack.count(), 7)
         self.assertEqual(window.stack.currentIndex(), 0)
         self.assertEqual(window.models_page.tabs.count(), 4)
+        self.assertEqual(window.publish_page.tabs.count(), 5)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["image"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["video"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)

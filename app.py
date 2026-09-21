@@ -12,6 +12,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from api_client import APIClientError, APIConfig, APIMartClient
 from batch_parser import BatchItem, create_batch_template, load_batch_items
+from browser_assistant import assist_upload, open_platform_page
 from jianying_service import (
     create_jianying_draft,
     detect_jianying_versions,
@@ -22,6 +23,7 @@ from jianying_service import (
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_balance, format_billing, format_pricing, format_usage
 from prompts import STYLE_PROMPTS, build_image_prompt, build_video_prompt, normalize_style_name
+from publish_platforms import PLATFORMS, PlatformPost, build_platform_posts
 
 
 APP_TITLE = "张小星图文视频生成器"
@@ -1676,6 +1678,284 @@ class JianyingPage(QtWidgets.QWidget):
             )
 
 
+class PublishAssistThread(QtCore.QThread):
+    result = QtCore.Signal(dict)
+    error = QtCore.Signal(str)
+
+    def __init__(self, params: dict, parent=None):
+        super().__init__(parent)
+        self.params = params
+
+    def run(self) -> None:
+        try:
+            self.result.emit(assist_upload(**self.params))
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class PublishPage(QtWidgets.QWidget):
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.posts_by_key: dict[str, PlatformPost] = {}
+        self.platform_widgets: dict[str, dict] = {}
+        self.assist_thread: PublishAssistThread | None = None
+
+        root = QtWidgets.QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+
+        side = card_frame()
+        side.setMinimumWidth(360)
+        side_layout = QtWidgets.QVBoxLayout(side)
+        side_layout.setContentsMargins(18, 18, 18, 18)
+        side_layout.setSpacing(12)
+        side_layout.addWidget(section_label("一键准备与分发"))
+        side_layout.addWidget(
+            hint_label(
+                "软件负责生成平台文案、校验格式、打开官方发布页并尝试上传。"
+                "最终发布按钮必须由你在平台页面手动点击。"
+            )
+        )
+
+        self.title_edit = QtWidgets.QLineEdit()
+        self.title_edit.setPlaceholderText("统一标题")
+        self.description_edit = QtWidgets.QPlainTextEdit()
+        self.description_edit.setPlaceholderText("统一简介或正文")
+        self.description_edit.setFixedHeight(120)
+        self.tags_edit = QtWidgets.QLineEdit()
+        self.tags_edit.setPlaceholderText("标签，用空格或逗号分隔，例如：肛周护理 久坐党 健康科普")
+        side_layout.addWidget(self.title_edit)
+        side_layout.addWidget(self.description_edit)
+        side_layout.addWidget(self.tags_edit)
+
+        side_layout.addWidget(section_label("图片与视频"))
+        self.media_list = QtWidgets.QListWidget()
+        self.media_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.media_list.setFixedHeight(130)
+        side_layout.addWidget(self.media_list)
+        media_buttons = QtWidgets.QGridLayout()
+        add_media = QtWidgets.QPushButton("上传文件")
+        load_latest = QtWidgets.QPushButton("载入最近生成")
+        remove_selected = QtWidgets.QPushButton("移除选中")
+        clear_media = QtWidgets.QPushButton("清空")
+        for button in (add_media, load_latest, remove_selected, clear_media):
+            button.setObjectName("secondaryButton")
+        add_media.clicked.connect(self.add_media)
+        load_latest.clicked.connect(self.load_latest)
+        remove_selected.clicked.connect(self.remove_selected)
+        clear_media.clicked.connect(self.clear_media)
+        media_buttons.addWidget(add_media, 0, 0)
+        media_buttons.addWidget(load_latest, 0, 1)
+        media_buttons.addWidget(remove_selected, 1, 0)
+        media_buttons.addWidget(clear_media, 1, 1)
+        side_layout.addLayout(media_buttons)
+
+        side_layout.addWidget(section_label("发布平台"))
+        platform_grid = QtWidgets.QGridLayout()
+        self.platform_checks: dict[str, QtWidgets.QCheckBox] = {}
+        for index, (key, profile) in enumerate(PLATFORMS.items()):
+            checkbox = QtWidgets.QCheckBox(profile.name)
+            checkbox.setChecked(True)
+            self.platform_checks[key] = checkbox
+            platform_grid.addWidget(checkbox, index // 3, index % 3)
+        side_layout.addLayout(platform_grid)
+
+        self.status_label = hint_label("准备就绪")
+        side_layout.addWidget(self.status_label)
+        generate_button = QtWidgets.QPushButton("生成平台适配文案")
+        generate_button.setObjectName("primaryButton")
+        generate_button.setMinimumHeight(46)
+        generate_button.clicked.connect(self.generate_posts)
+        side_layout.addWidget(generate_button)
+        side_layout.addStretch(1)
+
+        self.tabs = QtWidgets.QTabWidget()
+        for key, profile in PLATFORMS.items():
+            page = QtWidgets.QWidget()
+            layout = QtWidgets.QVBoxLayout(page)
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(10)
+            title = QtWidgets.QLineEdit()
+            title.setPlaceholderText("平台标题")
+            description = QtWidgets.QPlainTextEdit()
+            description.setPlaceholderText("平台简介或正文")
+            tags = QtWidgets.QLineEdit()
+            tags.setPlaceholderText("平台标签")
+            validation = hint_label("尚未生成适配文案。")
+            buttons = QtWidgets.QHBoxLayout()
+            copy_button = QtWidgets.QPushButton("复制全部文案")
+            open_button = QtWidgets.QPushButton("打开官方发布页")
+            upload_button = QtWidgets.QPushButton("辅助上传")
+            for button in (copy_button, open_button, upload_button):
+                button.setObjectName("secondaryButton")
+            copy_button.clicked.connect(lambda checked=False, k=key: self.copy_post(k))
+            open_button.clicked.connect(lambda checked=False, k=key: self.open_page(k))
+            upload_button.clicked.connect(lambda checked=False, k=key: self.assist_upload(k))
+            buttons.addWidget(copy_button)
+            buttons.addWidget(open_button)
+            buttons.addWidget(upload_button)
+            layout.addWidget(QtWidgets.QLabel("标题"))
+            layout.addWidget(title)
+            layout.addWidget(QtWidgets.QLabel("简介 / 正文"))
+            layout.addWidget(description, 1)
+            layout.addWidget(QtWidgets.QLabel("标签"))
+            layout.addWidget(tags)
+            layout.addWidget(validation)
+            layout.addLayout(buttons)
+            self.platform_widgets[key] = {
+                "page": page,
+                "title": title,
+                "description": description,
+                "tags": tags,
+                "validation": validation,
+                "upload_button": upload_button,
+            }
+            self.tabs.addTab(page, profile.name)
+        root.addWidget(scrollable_side_card(side))
+        root.addWidget(self.tabs, 1)
+
+    def add_media(self) -> None:
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            "选择发布素材",
+            str(Path.home()),
+            "媒体文件 (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.mp4 *.mov *.avi *.mkv *.webm)",
+        )
+        existing = {self.media_list.item(index).text() for index in range(self.media_list.count())}
+        for path in paths:
+            if path not in existing:
+                self.media_list.addItem(path)
+
+    def load_latest(self) -> None:
+        output_dir = Path(self.main_window.settings_store.as_dict()["output_dir"])
+        extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".mp4", ".mov", ".avi", ".mkv", ".webm"}
+        files = [
+            path
+            for path in output_dir.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in extensions
+            and "drafts" not in path.parts
+            and "browser_profiles" not in path.parts
+        ]
+        files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        existing = {self.media_list.item(index).text() for index in range(self.media_list.count())}
+        for path in files[:30]:
+            if str(path) not in existing:
+                self.media_list.addItem(str(path))
+        self.status_label.setText(f"已载入最近生成的 {min(30, len(files))} 个媒体文件")
+
+    def remove_selected(self) -> None:
+        rows = sorted({index.row() for index in self.media_list.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.media_list.takeItem(row)
+
+    def clear_media(self) -> None:
+        self.media_list.clear()
+
+    def selected_media(self) -> list[Path]:
+        return [Path(self.media_list.item(index).text()) for index in range(self.media_list.count())]
+
+    def selected_platforms(self) -> list[str]:
+        return [key for key, checkbox in self.platform_checks.items() if checkbox.isChecked()]
+
+    def generate_posts(self) -> None:
+        keys = self.selected_platforms()
+        if not keys:
+            QtWidgets.QMessageBox.warning(self, "未选择平台", "请至少选择一个发布平台。")
+            return
+        media = self.selected_media()
+        if not media:
+            QtWidgets.QMessageBox.warning(self, "缺少素材", "请上传或载入图片、视频。")
+            return
+        posts = build_platform_posts(
+            base_title=self.title_edit.text(),
+            description=self.description_edit.toPlainText(),
+            raw_tags=self.tags_edit.text(),
+            media_paths=media,
+            platform_keys=keys,
+        )
+        self.posts_by_key = {post.platform.key: post for post in posts}
+        for index, (key, profile) in enumerate(PLATFORMS.items()):
+            enabled = key in self.posts_by_key
+            self.tabs.setTabEnabled(index, enabled)
+            widgets = self.platform_widgets[key]
+            if not enabled:
+                widgets["validation"].setText("未勾选此平台。")
+                continue
+            post = self.posts_by_key[key]
+            widgets["title"].setText(post.title)
+            widgets["description"].setPlainText(post.description)
+            widgets["tags"].setText(" ".join(post.tags))
+            messages = post.errors + post.warnings
+            widgets["validation"].setText("；".join(messages) if messages else "校验通过，可以打开发布页。")
+        self.status_label.setText(f"已生成 {len(posts)} 个平台适配方案")
+
+    def _current_post_text(self, key: str) -> str:
+        widgets = self.platform_widgets[key]
+        title = widgets["title"].text().strip()
+        description = widgets["description"].toPlainText().strip()
+        tags = widgets["tags"].text().strip()
+        tag_text = " ".join(f"#{tag.lstrip('#')}" for tag in tags.split() if tag)
+        return "\n\n".join(part for part in (title, description, tag_text) if part)
+
+    def copy_post(self, key: str) -> None:
+        text = self._current_post_text(key)
+        if not text:
+            QtWidgets.QMessageBox.warning(self, "没有文案", "请先生成平台适配文案。")
+            return
+        QtWidgets.QApplication.clipboard().setText(text)
+        self.status_label.setText(f"已复制{PLATFORMS[key].name}文案到剪贴板")
+
+    def open_page(self, key: str) -> None:
+        try:
+            open_platform_page(key)
+            self.status_label.setText(f"已打开{PLATFORMS[key].name}官方发布页")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "打开发布页失败", str(exc))
+
+    def assist_upload(self, key: str) -> None:
+        post = self.posts_by_key.get(key)
+        if not post:
+            QtWidgets.QMessageBox.warning(self, "没有文案", "请先生成平台适配文案。")
+            return
+        if post.errors:
+            QtWidgets.QMessageBox.warning(self, "校验未通过", "\n".join(post.errors))
+            return
+        if thread_is_running(self.assist_thread):
+            QtWidgets.QMessageBox.information(self, "正在辅助上传", "请先完成当前浏览器页面。")
+            return
+
+        widgets = self.platform_widgets[key]
+        params = {
+            "platform_key": key,
+            "media_paths": [str(path) for path in self.selected_media()],
+            "title": widgets["title"].text().strip(),
+            "description": widgets["description"].toPlainText().strip(),
+            "keep_open": True,
+        }
+        self.status_label.setText(f"正在打开{PLATFORMS[key].name}并尝试上传，最终发布请手动点击")
+        self.assist_thread = PublishAssistThread(params, self)
+        self.assist_thread.result.connect(self._on_assist_result)
+        self.assist_thread.error.connect(self._on_assist_error)
+        self.assist_thread.finished.connect(
+            lambda thread=self.assist_thread: self._clear_assist_thread(thread)
+        )
+        self.assist_thread.start()
+
+    def _clear_assist_thread(self, thread: PublishAssistThread) -> None:
+        if self.assist_thread is thread:
+            self.assist_thread = None
+
+    def _on_assist_result(self, result: dict) -> None:
+        self.status_label.setText(result.get("message", "辅助上传完成"))
+        QtWidgets.QMessageBox.information(self, "辅助上传完成", result.get("message", ""))
+
+    def _on_assist_error(self, message: str) -> None:
+        self.status_label.setText(f"辅助上传失败：{message}")
+        QtWidgets.QMessageBox.critical(self, "辅助上传失败", message)
+
+
 class ModelsPage(QtWidgets.QWidget):
     refresh_requested = QtCore.Signal()
     pricing_refresh_requested = QtCore.Signal()
@@ -2084,7 +2364,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.nav_group = QtWidgets.QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        nav_labels = ["图文生成", "视频生成", "批量处理", "剪映草稿", "模型中心", "配置"]
+        nav_labels = ["图文生成", "视频生成", "批量处理", "剪映草稿", "发布中心", "模型中心", "配置"]
         self.nav_buttons: list[QtWidgets.QPushButton] = []
         for index, label in enumerate(nav_labels):
             button = QtWidgets.QPushButton(label)
@@ -2106,6 +2386,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_page = VideoPage(self)
         self.batch_page = BatchPage(self)
         self.jianying_page = JianyingPage(self)
+        self.publish_page = PublishPage(self)
         self.models_page = ModelsPage(self)
         self.settings_page = SettingsPage(self)
         self.models_page.refresh_requested.connect(self.refresh_models)
@@ -2116,6 +2397,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_page,
             self.batch_page,
             self.jianying_page,
+            self.publish_page,
             self.models_page,
             self.settings_page,
         ):
