@@ -181,6 +181,9 @@ class CoreTests(unittest.TestCase):
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["video"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["chat"]), 0)
+        self.assertTrue(window.image_page.output_edit.text())
+        self.assertTrue(window.video_page.output_edit.text())
+        self.assertTrue(window.batch_page.output_edit.text())
         test_catalog = {
             "image": [{"id": "test-image-model", "capability_tags": ["Text to Image"]}],
             "video": [{"id": "test-video-model", "capability_tags": ["Image to Video"]}],

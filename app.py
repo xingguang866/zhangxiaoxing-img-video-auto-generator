@@ -145,16 +145,24 @@ class SettingsStore:
         return str(value).lower() in {"1", "true", "yes", "on"}
 
     def as_dict(self) -> dict:
+        base_output = Path(self.settings.value("output_dir", default_output_dir()))
         return {
             "api_key": str(self.settings.value("api_key", "")),
             "base_url": str(self.settings.value("base_url", "https://api.apib.ai/v1")),
-            "output_dir": str(self.settings.value("output_dir", default_output_dir())),
+            "output_dir": str(base_output),
+            "image_output_dir": str(self.settings.value("image_output_dir", base_output / "images")),
+            "video_output_dir": str(self.settings.value("video_output_dir", base_output / "videos")),
+            "batch_output_dir": str(self.settings.value("batch_output_dir", base_output / "batch")),
             "mock_mode": self._bool("mock_mode", True),
         }
 
     def save(self, values: dict) -> None:
         for key, value in values.items():
             self.settings.setValue(key, value)
+        self.settings.sync()
+
+    def save_value(self, key: str, value: str) -> None:
+        self.settings.setValue(key, value)
         self.settings.sync()
 
 
@@ -785,6 +793,18 @@ class ImagePage(BaseGenerationPage):
         form.addRow("清晰度", self.resolution_combo)
         side_layout.addLayout(form)
 
+        output_row = QtWidgets.QHBoxLayout()
+        self.output_edit = QtWidgets.QLineEdit(
+            self.current_settings()["image_output_dir"]
+        )
+        browse_output = QtWidgets.QPushButton("输出路径")
+        browse_output.setObjectName("secondaryButton")
+        browse_output.clicked.connect(self.browse_output_dir)
+        self.output_edit.editingFinished.connect(self.save_output_dir)
+        output_row.addWidget(self.output_edit, 1)
+        output_row.addWidget(browse_output)
+        side_layout.addLayout(output_row)
+
         self.progress = QtWidgets.QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -828,6 +848,22 @@ class ImagePage(BaseGenerationPage):
         self.progress.setValue(value)
         self.status_label.setText(message)
 
+    def browse_output_dir(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "选择图文输出目录",
+            self.output_edit.text(),
+        )
+        if path:
+            self.output_edit.setText(path)
+            self.save_output_dir()
+
+    def save_output_dir(self) -> None:
+        self.main_window.settings_store.save_value(
+            "image_output_dir",
+            self.output_edit.text().strip(),
+        )
+
     def generate(self) -> None:
         theme = self.theme_edit.text().strip()
         lines = [line.strip() for line in self.copy_edit.toPlainText().splitlines() if line.strip()]
@@ -851,7 +887,9 @@ class ImagePage(BaseGenerationPage):
             }
             for index, line in enumerate(lines, start=1)
         ]
-        output_dir = Path(settings["output_dir"]) / f"图文_{datetime.now():%Y%m%d_%H%M%S}"
+        self.save_output_dir()
+        output_base = Path(self.output_edit.text().strip() or settings["image_output_dir"])
+        output_dir = output_base / f"图文_{datetime.now():%Y%m%d_%H%M%S}"
         self.gallery.set_items([])
         self.progress.setValue(0)
         self.start_worker("manual_images", settings, {"items": items, "output_dir": str(output_dir)})
@@ -937,6 +975,18 @@ class VideoPage(BaseGenerationPage):
         form.addRow("音频", self.audio_check)
         side_layout.addLayout(form)
 
+        output_row = QtWidgets.QHBoxLayout()
+        self.output_edit = QtWidgets.QLineEdit(
+            self.current_settings()["video_output_dir"]
+        )
+        browse_output = QtWidgets.QPushButton("输出路径")
+        browse_output.setObjectName("secondaryButton")
+        browse_output.clicked.connect(self.browse_output_dir)
+        self.output_edit.editingFinished.connect(self.save_output_dir)
+        output_row.addWidget(self.output_edit, 1)
+        output_row.addWidget(browse_output)
+        side_layout.addLayout(output_row)
+
         self.progress = QtWidgets.QProgressBar()
         self.progress.setRange(0, 100)
         side_layout.addWidget(self.progress)
@@ -1006,6 +1056,22 @@ class VideoPage(BaseGenerationPage):
         self.progress.setValue(value)
         self.status_label.setText(message)
 
+    def browse_output_dir(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "选择视频输出目录",
+            self.output_edit.text(),
+        )
+        if path:
+            self.output_edit.setText(path)
+            self.save_output_dir()
+
+    def save_output_dir(self) -> None:
+        self.main_window.settings_store.save_value(
+            "video_output_dir",
+            self.output_edit.text().strip(),
+        )
+
     def generate(self) -> None:
         paths = [Path(self.image_list.item(index).text()) for index in range(self.image_list.count())]
         if not paths:
@@ -1047,7 +1113,9 @@ class VideoPage(BaseGenerationPage):
                     "image_urls": [],
                 }
             ]
-        output_dir = Path(settings["output_dir"]) / f"视频_{datetime.now():%Y%m%d_%H%M%S}"
+        self.save_output_dir()
+        output_base = Path(self.output_edit.text().strip() or settings["video_output_dir"])
+        output_dir = output_base / f"视频_{datetime.now():%Y%m%d_%H%M%S}"
         self.gallery.set_items([])
         self.progress.setValue(0)
         self.start_worker("manual_videos", settings, {"items": items, "output_dir": str(output_dir)})
@@ -1087,8 +1155,10 @@ class BatchPage(BaseGenerationPage):
         root.addWidget(toolbar_card)
 
         controls_card = card_frame()
-        controls = QtWidgets.QHBoxLayout(controls_card)
-        controls.setContentsMargins(16, 12, 16, 12)
+        controls_layout = QtWidgets.QVBoxLayout(controls_card)
+        controls_layout.setContentsMargins(16, 12, 16, 12)
+        controls_layout.setSpacing(10)
+        controls = QtWidgets.QHBoxLayout()
         self.style_combo = QtWidgets.QComboBox()
         self.style_combo.addItems(list(STYLE_PROMPTS.keys()))
         self.style_combo.setCurrentText("手绘卡通")
@@ -1120,6 +1190,19 @@ class BatchPage(BaseGenerationPage):
         controls.addWidget(self.generate_images_button)
         controls.addWidget(self.generate_videos_button)
         controls.addWidget(self.stop_button)
+        controls_layout.addLayout(controls)
+
+        output_row = QtWidgets.QHBoxLayout()
+        self.output_edit = QtWidgets.QLineEdit(
+            self.current_settings()["batch_output_dir"]
+        )
+        browse_output = QtWidgets.QPushButton("批量输出路径")
+        browse_output.setObjectName("secondaryButton")
+        browse_output.clicked.connect(self.browse_output_dir)
+        self.output_edit.editingFinished.connect(self.save_output_dir)
+        output_row.addWidget(self.output_edit, 1)
+        output_row.addWidget(browse_output)
+        controls_layout.addLayout(output_row)
         root.addWidget(controls_card)
 
         content = QtWidgets.QHBoxLayout()
@@ -1267,8 +1350,24 @@ class BatchPage(BaseGenerationPage):
             return
         self.append_log(f"模板已保存：{path}")
 
+    def browse_output_dir(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "选择批量输出目录",
+            self.output_edit.text(),
+        )
+        if path:
+            self.output_edit.setText(path)
+            self.save_output_dir()
+
+    def save_output_dir(self) -> None:
+        self.main_window.settings_store.save_value(
+            "batch_output_dir",
+            self.output_edit.text().strip(),
+        )
+
     def open_output_dir(self) -> None:
-        path = Path(self.current_settings()["output_dir"])
+        path = Path(self.output_edit.text().strip() or self.current_settings()["batch_output_dir"])
         path.mkdir(parents=True, exist_ok=True)
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
@@ -1291,7 +1390,9 @@ class BatchPage(BaseGenerationPage):
             }
         )
         items = [copy.deepcopy(item) for item in self.items]
-        output_dir = Path(settings["output_dir"]) / f"批量图片_{datetime.now():%Y%m%d_%H%M%S}"
+        self.save_output_dir()
+        output_base = Path(self.output_edit.text().strip() or settings["batch_output_dir"])
+        output_dir = output_base / f"批量图片_{datetime.now():%Y%m%d_%H%M%S}"
         self.progress.setValue(0)
         self.start_worker("batch_images", settings, {"items": items, "output_dir": str(output_dir)})
 
@@ -1313,7 +1414,9 @@ class BatchPage(BaseGenerationPage):
             }
         )
         items = [copy.deepcopy(item) for item in self.items]
-        output_dir = Path(settings["output_dir"]) / f"批量视频_{datetime.now():%Y%m%d_%H%M%S}"
+        self.save_output_dir()
+        output_base = Path(self.output_edit.text().strip() or settings["batch_output_dir"])
+        output_dir = output_base / f"批量视频_{datetime.now():%Y%m%d_%H%M%S}"
         self.progress.setValue(0)
         self.start_worker(
             "batch_videos",
