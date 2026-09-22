@@ -42,6 +42,38 @@ def build_image_prompt(
     return "".join(parts)
 
 
+def build_cover_prompt(
+    theme: str,
+    cover_title: str,
+    cover_subtitle: str,
+    style: str,
+) -> str:
+    theme = theme.strip()
+    cover_title = cover_title.strip() or theme or "健康生活小知识"
+    cover_subtitle = cover_subtitle.strip()
+    style_prompt = STYLE_PROMPTS.get(style, STYLE_PROMPTS["不限风格"])
+
+    parts = [
+        "生成一张3:4竖版中文封面图，适合抖音、小红书、视频号图文和短视频使用。",
+        f"封面主标题：{cover_title}。",
+        "主标题必须最大、最醒目、中文文字清晰，不出现错别字、乱码、缺字或重复字。",
+    ]
+    if cover_subtitle:
+        parts.append(f"封面副标题：{cover_subtitle}。副标题字号小于主标题，信息简洁。")
+    if theme:
+        parts.append(f"内容主题：{theme}。")
+    parts.extend(
+        [
+            f"视觉风格：{style_prompt}",
+            "封面布局：中心或上半区突出主标题，搭配一到三个简洁图标、箭头、便签或手绘元素。",
+            "信息密度适中，重点突出，留白充足，手机小屏缩略图下仍然清晰可读。",
+            "不要生成大段正文，不要堆满元素，不出现二维码、水印和联系方式。",
+            "内容边界：不出现隐私部位、血腥、医疗器械、疗效对比和夸大承诺。",
+        ]
+    )
+    return "".join(parts)
+
+
 def build_video_prompt(
     theme: str,
     image_copy: str,

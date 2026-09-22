@@ -22,7 +22,13 @@ from jianying_service import (
 )
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_balance, format_billing, format_pricing, format_usage
-from prompts import STYLE_PROMPTS, build_image_prompt, build_video_prompt, normalize_style_name
+from prompts import (
+    STYLE_PROMPTS,
+    build_cover_prompt,
+    build_image_prompt,
+    build_video_prompt,
+    normalize_style_name,
+)
 from publish_platforms import PLATFORMS, PlatformPost, build_platform_posts
 
 
@@ -774,6 +780,17 @@ class ImagePage(BaseGenerationPage):
         self.copy_edit.setFixedHeight(180)
         side_layout.addWidget(self.copy_edit)
 
+        side_layout.addWidget(section_label("封面图生成"))
+        cover_form = QtWidgets.QFormLayout()
+        cover_form.setSpacing(10)
+        self.cover_title_edit = QtWidgets.QLineEdit()
+        self.cover_title_edit.setPlaceholderText("封面主标题，例如：久坐党别忽略这件事")
+        self.cover_subtitle_edit = QtWidgets.QLineEdit()
+        self.cover_subtitle_edit.setPlaceholderText("封面副标题，可选")
+        cover_form.addRow("主标题", self.cover_title_edit)
+        cover_form.addRow("副标题", self.cover_subtitle_edit)
+        side_layout.addLayout(cover_form)
+
         form = QtWidgets.QFormLayout()
         form.setSpacing(10)
         self.style_combo = QtWidgets.QComboBox()
@@ -819,6 +836,12 @@ class ImagePage(BaseGenerationPage):
         self.generate_button.clicked.connect(self.generate)
         side_layout.addWidget(self.generate_button)
 
+        self.cover_button = QtWidgets.QPushButton("生成封面图")
+        self.cover_button.setObjectName("secondaryButton")
+        self.cover_button.setMinimumHeight(42)
+        self.cover_button.clicked.connect(self.generate_cover)
+        side_layout.addWidget(self.cover_button)
+
         self.stop_button = QtWidgets.QPushButton("停止生成")
         self.stop_button.setObjectName("secondaryButton")
         self.stop_button.clicked.connect(self.stop_worker)
@@ -862,6 +885,43 @@ class ImagePage(BaseGenerationPage):
         self.main_window.settings_store.save_value(
             "image_output_dir",
             self.output_edit.text().strip(),
+        )
+
+    def generate_cover(self) -> None:
+        theme = self.theme_edit.text().strip()
+        title = self.cover_title_edit.text().strip() or theme
+        subtitle = self.cover_subtitle_edit.text().strip()
+        if not title:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "缺少封面标题",
+                "请填写封面主标题，或先在主题中填写主题。",
+            )
+            return
+
+        settings = self.current_settings()
+        settings.update(
+            {
+                "image_model": self.model_combo.currentText().strip(),
+                "image_size": "3:4",
+                "image_resolution": self.resolution_combo.currentText(),
+            }
+        )
+        style = self.style_combo.currentText()
+        prompt = build_cover_prompt(theme, title, subtitle, style)
+        item = {
+            "title": f"封面_{title}",
+            "style": style,
+            "prompt": prompt,
+        }
+        self.save_output_dir()
+        output_base = Path(self.output_edit.text().strip() or settings["image_output_dir"])
+        output_dir = output_base / f"封面_{datetime.now():%Y%m%d_%H%M%S}"
+        self.progress.setValue(0)
+        self.start_worker(
+            "manual_images",
+            settings,
+            {"items": [item], "output_dir": str(output_dir)},
         )
 
     def generate(self) -> None:
