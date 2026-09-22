@@ -119,6 +119,45 @@ def count_chinese_characters(value: str) -> int:
     return len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]", value))
 
 
+def build_manual_image_items(
+    *,
+    theme: str,
+    page_lines: list[str],
+    style: str,
+    cover_title: str,
+    cover_subtitle: str,
+) -> list[dict]:
+    resolved_cover_title = (
+        cover_title.strip()
+        or theme.strip()
+        or (page_lines[0].strip() if page_lines else "健康生活小知识")
+    )
+    items: list[dict] = [
+        {
+            "title": f"封面_{resolved_cover_title}",
+            "style": style,
+            "prompt": build_cover_prompt(
+                theme,
+                resolved_cover_title,
+                cover_subtitle,
+                style,
+            ),
+            "size": "3:4",
+            "is_cover": True,
+        }
+    ]
+    items.extend(
+        {
+            "title": theme or f"图片{index}",
+            "style": style,
+            "prompt": build_image_prompt(theme, line, style),
+            "is_cover": False,
+        }
+        for index, line in enumerate(page_lines, start=1)
+    )
+    return items
+
+
 def safe_filename(value: str, max_length: int = 40) -> str:
     value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
     value = re.sub(r"\s+", "_", value)
@@ -221,12 +260,15 @@ class GenerationWorker(QtCore.QThread):
         client: APIMartClient,
         prompt: str,
         destination: Path,
+        *,
+        size: str | None = None,
+        resolution: str | None = None,
     ) -> tuple[Path, str]:
         task_id = client.submit_image(
             prompt=prompt,
             model=self.settings["image_model"],
-            size=self.settings["image_size"],
-            resolution=self.settings["image_resolution"],
+            size=size or self.settings["image_size"],
+            resolution=resolution or self.settings["image_resolution"],
         )
         self.signals.log.emit(f"图片任务已提交：{task_id}")
         task = client.wait_task(
@@ -340,7 +382,13 @@ class GenerationWorker(QtCore.QThread):
                     index,
                 )
             else:
-                path, remote_url = self._generate_real_image(client, item["prompt"], destination)
+                path, remote_url = self._generate_real_image(
+                    client,
+                    item["prompt"],
+                    destination,
+                    size=item.get("size"),
+                    resolution=item.get("resolution"),
+                )
             generated += 1
             self.signals.image_ready.emit(
                 {
@@ -977,14 +1025,13 @@ class ImagePage(BaseGenerationPage):
             }
         )
         style = self.style_combo.currentText()
-        items = [
-            {
-                "title": theme or f"图片{index}",
-                "style": style,
-                "prompt": build_image_prompt(theme, line, style),
-            }
-            for index, line in enumerate(lines, start=1)
-        ]
+        items = build_manual_image_items(
+            theme=theme,
+            page_lines=lines,
+            style=style,
+            cover_title=self.cover_title_edit.text().strip(),
+            cover_subtitle=self.cover_subtitle_edit.text().strip(),
+        )
         self.save_output_dir()
         output_base = Path(self.output_edit.text().strip() or settings["image_output_dir"])
         output_dir = output_base / f"图文_{datetime.now():%Y%m%d_%H%M%S}"
@@ -996,7 +1043,9 @@ class ImagePage(BaseGenerationPage):
         if "error" in summary:
             self.status_label.setText(f"任务失败：{summary['error']}")
             return
-        self.status_label.setText(f"完成，共生成 {summary.get('generated', 0)} 张图片")
+        self.status_label.setText(
+            f"完成，共生成 {summary.get('generated', 0)} 张图片（包含封面图）"
+        )
 
 
 class VideoPage(BaseGenerationPage):

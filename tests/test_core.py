@@ -11,7 +11,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6 import QtWidgets
 
 from api_client import APIClientError, APIMartClient
-from app import FALLBACK_MODEL_CATALOG, MainWindow, count_chinese_characters
+from app import (
+    FALLBACK_MODEL_CATALOG,
+    MainWindow,
+    build_manual_image_items,
+    count_chinese_characters,
+)
 from batch_parser import create_batch_template, load_batch_items
 from jianying_service import create_jianying_draft
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
@@ -39,6 +44,20 @@ class CoreTests(unittest.TestCase):
         self.assertIn("超大字号", cover)
         self.assertIn("45%至60%", cover)
         self.assertEqual(count_chinese_characters("以下这5类人"), 5)
+
+    def test_manual_image_bundle_includes_cover(self):
+        items = build_manual_image_items(
+            theme="久坐护理",
+            page_lines=["第一页内容", "第二页内容"],
+            style="手绘卡通",
+            cover_title="久坐党必看",
+            cover_subtitle="三个习惯",
+        )
+        self.assertEqual(len(items), 3)
+        self.assertTrue(items[0]["is_cover"])
+        self.assertEqual(items[0]["size"], "3:4")
+        self.assertIn("封面主标题", items[0]["prompt"])
+        self.assertFalse(items[1]["is_cover"])
 
     def test_model_parameter_validation(self):
         duration, resolution = APIMartClient._normalize_video_parameters(
