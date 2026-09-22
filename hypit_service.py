@@ -239,6 +239,21 @@ def environment_report() -> str:
     return "\n".join(lines)
 
 
+def environment_summary() -> str:
+    info = environment()
+    return "\n".join(
+        [
+            f"Node: {Path(info.node).name if info.node else '未安装'}",
+            f"npm: {Path(info.npm).name if info.npm else '未安装'}",
+            f"pnpm: {Path(info.pnpm).name if info.pnpm else '未安装'}",
+            f"FFmpeg: {Path(info.ffmpeg).name if info.ffmpeg else '未安装'}",
+            f"FFprobe: {Path(info.ffprobe).name if info.ffprobe else '未安装'}",
+            f"uv: {Path(info.uv).name if info.uv else '未安装'}",
+            f"Hypit CLI: {Path(info.hypit).name if info.hypit else '未安装'}",
+        ]
+    )
+
+
 def install_hypit_cli(version: str = "0.2.12") -> str:
     npm = find_npm()
     if not npm:

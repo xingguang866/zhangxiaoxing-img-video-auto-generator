@@ -20,6 +20,7 @@ from hypit_service import (
     ensure_pnpm,
     ensure_project_dir,
     environment_report as hypit_environment_report,
+    environment_summary as hypit_environment_summary,
     hypit_version,
     install_apib_provider,
     install_ffmpeg_tools,
@@ -2151,15 +2152,18 @@ class HypitPage(QtWidgets.QWidget):
             )
         )
 
-        self.environment_label = QtWidgets.QPlainTextEdit()
+        self.environment_label = QtWidgets.QTextBrowser()
         self.environment_label.setReadOnly(True)
-        self.environment_label.setLineWrapMode(
-            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
+        self.environment_label.setWordWrapMode(
+            QtGui.QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
         )
         self.environment_label.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.environment_label.setFixedHeight(190)
+        self.environment_label.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.environment_label.setFixedHeight(165)
         self.refresh_environment_text()
         side_layout.addWidget(self.environment_label)
 
@@ -2195,7 +2199,12 @@ class HypitPage(QtWidgets.QWidget):
         svrun_row.addWidget(browse_svrun)
         side_layout.addLayout(svrun_row)
 
+        side_layout.addWidget(section_label("操作"))
         buttons = QtWidgets.QGridLayout()
+        buttons.setHorizontalSpacing(10)
+        buttons.setVerticalSpacing(10)
+        buttons.setColumnStretch(0, 1)
+        buttons.setColumnStretch(1, 1)
         self.check_button = QtWidgets.QPushButton("检查环境")
         self.install_button = QtWidgets.QPushButton("安装/修复环境")
         self.runtime_button = QtWidgets.QPushButton("初始化 Runtime")
@@ -2246,7 +2255,11 @@ class HypitPage(QtWidgets.QWidget):
             self.studio_button,
         ]
         for index, button in enumerate(button_specs):
-            button.setMinimumHeight(36)
+            button.setMinimumHeight(38)
+            button.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
             buttons.addWidget(button, index // 2, index % 2)
         side_layout.addLayout(buttons)
 
@@ -2282,12 +2295,12 @@ class HypitPage(QtWidgets.QWidget):
         self.log_edit.setReadOnly(True)
         log_layout.addWidget(self.log_edit, 1)
 
-        root.addWidget(scrollable_side_card(side, width=470))
+        root.addWidget(scrollable_side_card(side, width=500))
         root.addWidget(log_card, 1)
         self.append_log("Hypit 独立栏目已就绪。")
 
     def refresh_environment_text(self) -> None:
-        self.environment_label.setPlainText(hypit_environment_report())
+        self.environment_label.setPlainText(hypit_environment_summary())
 
     def append_log(self, text: str) -> None:
         self.log_edit.appendPlainText(text)
