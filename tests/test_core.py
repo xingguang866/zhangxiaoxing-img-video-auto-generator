@@ -14,10 +14,11 @@ from api_client import APIClientError, APIMartClient
 from app import (
     FALLBACK_MODEL_CATALOG,
     MainWindow,
+    build_batch_image_jobs,
     build_manual_image_items,
     count_chinese_characters,
 )
-from batch_parser import create_batch_template, load_batch_items
+from batch_parser import BatchItem, create_batch_template, load_batch_items
 from jianying_service import create_jianying_draft
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_pricing, format_usage
@@ -58,6 +59,23 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(items[0]["size"], "3:4")
         self.assertIn("封面主标题", items[0]["prompt"])
         self.assertFalse(items[1]["is_cover"])
+
+    def test_batch_jobs_include_large_title_cover(self):
+        item = BatchItem(
+            index=1,
+            theme="干纸猛擦VS湿厕纸轻擦，差别有多大？",
+            copy="1、减少摩擦；2、保持干爽",
+            style="手绘卡通",
+            image_prompts=["图1：对比场景", "图2：步骤说明"],
+        )
+        jobs = build_batch_image_jobs(item)
+        self.assertEqual(len(jobs), 3)
+        self.assertTrue(jobs[0]["is_cover"])
+        self.assertEqual(jobs[0]["order"], 0)
+        self.assertEqual(jobs[0]["size"], "3:4")
+        self.assertIn("干纸猛擦VS湿厕纸轻擦", jobs[0]["prompt"])
+        self.assertIn("45%至60%", jobs[0]["prompt"])
+        self.assertFalse(jobs[1]["is_cover"])
 
     def test_model_parameter_validation(self):
         duration, resolution = APIMartClient._normalize_video_parameters(

@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6 import QtCore, QtWidgets
 
 from app import GenerationWorker
+from batch_parser import BatchItem
 
 
 class WorkerIntegrationTests(unittest.TestCase):
@@ -96,6 +97,46 @@ class WorkerIntegrationTests(unittest.TestCase):
             self.assertEqual(len(videos), 1)
             self.assertTrue(Path(videos[0]["path"]).exists())
             self.assertGreater(Path(videos[0]["path"]).stat().st_size, 10_000)
+
+    def test_batch_images_include_cover(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            settings = {
+                "api_key": "",
+                "base_url": "https://api.apib.ai/v1",
+                "output_dir": str(output),
+                "mock_mode": True,
+                "image_model": "gpt-image-2",
+                "image_size": "3:4",
+                "image_resolution": "1k",
+                "video_model": "seedance-2.0-fast",
+                "video_size": "9:16",
+                "video_resolution": "720p",
+                "video_duration": 2,
+                "generate_audio": False,
+                "style": "手绘卡通",
+            }
+            item = BatchItem(
+                index=1,
+                theme="干纸猛擦VS湿厕纸轻擦，差别有多大？",
+                copy="对比测试",
+                style="手绘卡通",
+                image_prompts=["图1：对比场景"],
+            )
+            worker = GenerationWorker(
+                "batch_images",
+                settings,
+                {
+                    "output_dir": str(output / "batch"),
+                    "items": [item],
+                },
+            )
+            summary, images, _ = self._run_worker(worker)
+            self.assertEqual(summary.get("generated"), 2)
+            self.assertEqual(len(images), 2)
+            self.assertTrue(images[0]["is_cover"])
+            self.assertIn("封面", images[0]["title"])
+            self.assertFalse(images[1]["is_cover"])
 
 
 if __name__ == "__main__":

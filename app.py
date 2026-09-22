@@ -158,6 +158,60 @@ def build_manual_image_items(
     return items
 
 
+def truncate_to_chinese_limit(value: str, limit: int) -> str:
+    result: list[str] = []
+    chinese_count = 0
+    for character in value:
+        if re.match(r"[\u3400-\u4dbf\u4e00-\u9fff]", character):
+            chinese_count += 1
+        if chinese_count > limit:
+            break
+        result.append(character)
+    return "".join(result).strip(" ，。！？,.!?；;")
+
+
+def derive_batch_cover_text(theme: str, copy: str) -> tuple[str, str]:
+    raw = (theme or copy).strip()
+    if "｜" in raw:
+        raw = raw.split("｜", 1)[1].strip()
+    raw = re.sub(r"^[0-9０-９、.．\s]+", "", raw)
+    pieces = re.split(r"[，,。！？!?；;]", raw, maxsplit=1)
+    title = truncate_to_chinese_limit(pieces[0].strip(), 14)
+    subtitle = pieces[1].strip() if len(pieces) > 1 else ""
+    if not title:
+        title = truncate_to_chinese_limit(copy.strip(), 14) or "健康生活小知识"
+    return title, subtitle
+
+
+def build_batch_image_jobs(item: BatchItem) -> list[dict]:
+    cover_title, cover_subtitle = derive_batch_cover_text(item.theme, item.copy)
+    style = normalize_style_name(item.style)
+    jobs: list[dict] = [
+        {
+            "order": 0,
+            "is_cover": True,
+            "prompt": build_cover_prompt(
+                item.theme,
+                cover_title,
+                cover_subtitle,
+                style,
+            ),
+            "title": f"{item.theme}_封面",
+            "size": "3:4",
+        }
+    ]
+    jobs.extend(
+        {
+            "order": index,
+            "is_cover": False,
+            "prompt": prompt,
+            "title": f"{item.theme}_图{index}",
+        }
+        for index, prompt in enumerate(item.image_prompts, start=1)
+    )
+    return jobs
+
+
 def safe_filename(value: str, max_length: int = 40) -> str:
     value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
     value = re.sub(r"\s+", "_", value)
@@ -445,25 +499,45 @@ class GenerationWorker(QtCore.QThread):
         items: list[BatchItem] = self.payload["items"]
         client = None if self.settings["mock_mode"] else self._client()
         batch_dir = Path(self.payload["output_dir"])
-        total = sum(len(item.image_prompts) for item in items)
+        item_jobs = [(item, build_batch_image_jobs(item)) for item in items]
+        total = sum(len(jobs) for _, jobs in item_jobs)
         current = 0
         generated = 0
 
-        for item in items:
+        for item, jobs in item_jobs:
             self._check_cancel()
             item_dir = batch_dir / f"{item.index:02d}_{safe_filename(item.theme)}"
             item_dir.mkdir(parents=True, exist_ok=True)
-            self.signals.batch_status.emit(item.index, "生成图片中")
+            self.signals.batch_status.emit(item.index, f"生成图片中（含封面，共{len(jobs)}张）")
 
-            for prompt_index, prompt in enumerate(item.image_prompts, start=1):
+            for job in jobs:
                 self._check_cancel()
-                self._set_progress(current, total, f"{item.theme} · 图片 {prompt_index}/{len(item.image_prompts)}")
-                destination = item_dir / f"{prompt_index:02d}_image"
+                order = int(job["order"])
+                prompt = str(job["prompt"])
+                is_cover = bool(job.get("is_cover"))
+                label = "封面" if is_cover else "image"
+                self._set_progress(
+                    current,
+                    total,
+                    f"{item.theme} · {'封面' if is_cover else f'图{order}'}",
+                )
+                destination = item_dir / f"{order:02d}_{label}"
                 style = normalize_style_name(item.style or self.settings["style"])
                 if self.settings["mock_mode"]:
-                    path, remote_url = self._generate_mock_image(prompt, style, destination, prompt_index)
+                    path, remote_url = self._generate_mock_image(
+                        prompt,
+                        style,
+                        destination,
+                        1 if is_cover else order,
+                    )
                 else:
-                    path, remote_url = self._generate_real_image(client, prompt, destination)
+                    path, remote_url = self._generate_real_image(
+                        client,
+                        prompt,
+                        destination,
+                        size=job.get("size"),
+                        resolution=job.get("resolution"),
+                    )
                 item.image_paths.append(path)
                 if remote_url:
                     item.image_urls.append(remote_url)
@@ -475,8 +549,9 @@ class GenerationWorker(QtCore.QThread):
                         "path": str(path),
                         "remote_url": remote_url,
                         "prompt": prompt,
-                        "title": item.theme,
-                        "page": prompt_index,
+                        "title": job["title"],
+                        "page": order,
+                        "is_cover": is_cover,
                     }
                 )
 
