@@ -163,6 +163,9 @@ API Key 使用 Qt 本机设置保存，不会写入源码文件。
 - 查看 Build 状态
 - 导出 Build 输出
 - 打开 Hypit Studio
+- 打开图文版“使用教程”
+
+点击 Hypit 页面中的“使用教程”，会打开图文说明。教程包含环境准备、APIB Provider、Runtime、Plan、Build、结果导出、Studio、费用提醒和常见问题，首次使用可按教程中的 12 步流程操作。
 
 当前测试结果：
 

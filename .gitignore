@@ -16,6 +16,7 @@ settings.json
 
 output/
 *.log
+assets/hypit_tutorial/
 
 .idea/
 .vscode/

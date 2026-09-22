@@ -31,6 +31,7 @@ from hypit_service import (
     run_hypit,
     start_hypit_process,
 )
+from hypit_tutorial import build_tutorial_html
 from jianying_service import (
     create_jianying_draft,
     detect_jianying_versions,
@@ -2206,6 +2207,7 @@ class HypitPage(QtWidgets.QWidget):
         buttons.setColumnStretch(0, 1)
         buttons.setColumnStretch(1, 1)
         self.check_button = QtWidgets.QPushButton("检查环境")
+        self.tutorial_button = QtWidgets.QPushButton("使用教程")
         self.install_button = QtWidgets.QPushButton("安装/修复环境")
         self.runtime_button = QtWidgets.QPushButton("初始化 Runtime")
         self.prepare_runtime_button = QtWidgets.QPushButton("准备 Runtime")
@@ -2218,6 +2220,7 @@ class HypitPage(QtWidgets.QWidget):
         self.studio_button = QtWidgets.QPushButton("打开 Studio")
         for button in (
             self.check_button,
+            self.tutorial_button,
             self.install_button,
             self.runtime_button,
             self.prepare_runtime_button,
@@ -2231,6 +2234,7 @@ class HypitPage(QtWidgets.QWidget):
         ):
             button.setObjectName("secondaryButton")
         self.check_button.clicked.connect(self.check_environment)
+        self.tutorial_button.clicked.connect(self.open_tutorial)
         self.install_button.clicked.connect(self.install_environment)
         self.runtime_button.clicked.connect(self.initialize_runtime)
         self.prepare_runtime_button.clicked.connect(self.prepare_runtime)
@@ -2243,6 +2247,7 @@ class HypitPage(QtWidgets.QWidget):
         self.studio_button.clicked.connect(self.open_studio)
         button_specs = [
             self.check_button,
+            self.tutorial_button,
             self.install_button,
             self.runtime_button,
             self.prepare_runtime_button,
@@ -2342,6 +2347,7 @@ class HypitPage(QtWidgets.QWidget):
     def set_busy(self, busy: bool) -> None:
         for button in (
             self.check_button,
+            self.tutorial_button,
             self.install_button,
             self.runtime_button,
             self.prepare_runtime_button,
@@ -2364,6 +2370,21 @@ class HypitPage(QtWidgets.QWidget):
             self.append_log(hypit_environment_report())
         except Exception as exc:
             self.append_log(f"环境检查失败：{exc}")
+
+    def open_tutorial(self) -> None:
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Hypit视频使用教程")
+        dialog.resize(1000, 760)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        browser = QtWidgets.QTextBrowser()
+        browser.setOpenExternalLinks(False)
+        browser.setHtml(build_tutorial_html())
+        layout.addWidget(browser, 1)
+        close_button = QtWidgets.QPushButton("关闭")
+        close_button.setObjectName("primaryButton")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
 
     def install_environment(self) -> None:
         if thread_is_running(self.setup_thread):

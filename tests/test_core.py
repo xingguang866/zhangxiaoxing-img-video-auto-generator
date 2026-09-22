@@ -25,6 +25,7 @@ from hypit_service import (
     hypit_version,
     install_apib_provider,
 )
+from hypit_tutorial import ASSET_DIR, build_tutorial_html
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_pricing, format_usage
 from publish_platforms import build_platform_posts
@@ -245,6 +246,28 @@ class CoreTests(unittest.TestCase):
                 "apib.default",
             )
 
+    def test_hypit_tutorial_assets_and_content(self):
+        html = build_tutorial_html()
+        expected_assets = [
+            "01_project.png",
+            "02_provider.png",
+            "03_runtime.png",
+            "04_plan.png",
+            "05_build.png",
+            "06_output.png",
+            "07_flow.png",
+        ]
+        for name in expected_assets:
+            asset = ASSET_DIR / name
+            self.assertTrue(asset.exists(), asset)
+            self.assertGreater(asset.stat().st_size, 10_000)
+            self.assertIn(asset.as_uri(), html)
+
+        self.assertIn("Hypit 视频栏目使用教程", html)
+        self.assertIn("配置 APIB Provider", html)
+        self.assertIn("Plan 不提交付费任务", html)
+        self.assertIn("常见问题", html)
+
     def test_ui_smoke(self):
         window = MainWindow()
         window.show()
@@ -254,6 +277,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(window.models_page.tabs.count(), 4)
         self.assertEqual(window.publish_page.tabs.count(), 5)
         self.assertIn("Hypit CLI", window.hypit_page.environment_label.toPlainText())
+        self.assertEqual(window.hypit_page.tutorial_button.text(), "使用教程")
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["image"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["video"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)
