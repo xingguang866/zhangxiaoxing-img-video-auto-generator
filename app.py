@@ -785,11 +785,15 @@ class ImagePage(BaseGenerationPage):
         cover_form.setSpacing(10)
         self.cover_title_edit = QtWidgets.QLineEdit()
         self.cover_title_edit.setPlaceholderText("封面主标题，例如：久坐党别忽略这件事")
+        self.cover_title_edit.setMaxLength(24)
         self.cover_subtitle_edit = QtWidgets.QLineEdit()
         self.cover_subtitle_edit.setPlaceholderText("封面副标题，可选")
         cover_form.addRow("主标题", self.cover_title_edit)
         cover_form.addRow("副标题", self.cover_subtitle_edit)
         side_layout.addLayout(cover_form)
+        side_layout.addWidget(
+            hint_label("建议主标题控制在 14 个字以内，封面会优先保证大字和远距离可读性。")
+        )
 
         form = QtWidgets.QFormLayout()
         form.setSpacing(10)

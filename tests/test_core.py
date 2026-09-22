@@ -36,6 +36,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn("封面主标题", cover)
         self.assertIn("久坐党别忽略这件事", cover)
         self.assertIn("三个习惯现在就改", cover)
+        self.assertIn("超大字号", cover)
+        self.assertIn("30%至45%", cover)
 
     def test_model_parameter_validation(self):
         duration, resolution = APIMartClient._normalize_video_parameters(
@@ -187,6 +189,7 @@ class CoreTests(unittest.TestCase):
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["chat"]), 0)
         self.assertTrue(window.image_page.output_edit.text())
         self.assertTrue(window.image_page.cover_title_edit.placeholderText())
+        self.assertEqual(window.image_page.cover_title_edit.maxLength(), 24)
         self.assertEqual(window.image_page.cover_button.text(), "生成封面图")
         self.assertTrue(window.video_page.output_edit.text())
         self.assertTrue(window.batch_page.output_edit.text())
