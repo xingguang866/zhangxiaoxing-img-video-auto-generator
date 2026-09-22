@@ -137,6 +137,46 @@ API Key 使用 Qt 本机设置保存，不会写入源码文件。
 
 当前草稿生成兼容剪映 6.0.1。剪映草稿是本地私有格式，升级剪映后如果格式变化，需要同步调整 `pyJianYingDraft` 版本或草稿模板。
 
+## Hypit 视频引擎
+
+软件新增独立的“Hypit视频”栏目。Hypit 作为本地 Node.js 视频工作流引擎运行，不替换现有图片、视频和剪映草稿功能。
+
+安装的组件：
+
+- Hypit Codex Skill
+- `@hypit/hypit` CLI 0.2.12
+- Node.js 22.15+
+- pnpm 10.33
+- FFmpeg 和 FFprobe
+- 本机 Microsoft Edge 作为本地渲染浏览器
+
+栏目提供：
+
+- 检查 Hypit 环境
+- 安装或修复依赖
+- 创建和选择 Hypit 项目
+- 初始化 Runtime
+- 启动本地 Runtime Worker
+- Doctor 环境诊断
+- Plan 计划检查
+- Build 执行
+- 查看 Build 状态
+- 导出 Build 输出
+- 打开 Hypit Studio
+
+当前测试结果：
+
+- Hypit CLI 0.2.12 可运行
+- Runtime Profile 初始化成功
+- `runtime up` 成功
+- Runtime Worker 运行中
+- 本地 Programs `2/2 ready`
+- Edge 截图渲染成功
+- MP4 媒体探测成功
+- 视频关键帧提取成功
+
+完整视频生成仍需要选择模型服务。可选 HypiHub 托管账户，或为现有 API 服务编写 Hypit Provider。未选择 Provider 前，Doctor 会提示缺少对应凭据。
+
 ## 发布中心
 
 “发布中心”第一阶段的定位是一键准备、分发和确认发布，不依赖平台发布 API 审核。

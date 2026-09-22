@@ -20,6 +20,7 @@ from app import (
 )
 from batch_parser import BatchItem, create_batch_template, load_batch_items
 from jianying_service import create_jianying_draft
+from hypit_service import environment as hypit_environment, hypit_version
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_pricing, format_usage
 from publish_platforms import build_platform_posts
@@ -213,14 +214,25 @@ class CoreTests(unittest.TestCase):
             self.assertGreaterEqual(len(content.get("materials", {}).get("videos", [])), 1)
             self.assertGreaterEqual(len(content.get("materials", {}).get("texts", [])), 1)
 
+    def test_hypit_environment(self):
+        info = hypit_environment()
+        self.assertTrue(info.node)
+        self.assertTrue(info.npm)
+        self.assertTrue(info.pnpm)
+        self.assertTrue(info.ffmpeg)
+        self.assertTrue(info.ffprobe)
+        self.assertTrue(info.hypit)
+        self.assertEqual(hypit_version(), "0.2.12")
+
     def test_ui_smoke(self):
         window = MainWindow()
         window.show()
         self.app.processEvents()
-        self.assertEqual(window.stack.count(), 7)
+        self.assertEqual(window.stack.count(), 8)
         self.assertEqual(window.stack.currentIndex(), 0)
         self.assertEqual(window.models_page.tabs.count(), 4)
         self.assertEqual(window.publish_page.tabs.count(), 5)
+        self.assertIn("Hypit CLI", window.hypit_page.environment_label.toPlainText())
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["image"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["video"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)

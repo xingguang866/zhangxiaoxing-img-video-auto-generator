@@ -13,6 +13,21 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from api_client import APIClientError, APIConfig, APIMartClient
 from batch_parser import BatchItem, create_batch_template, load_batch_items
 from browser_assistant import assist_upload, open_platform_page
+from hypit_service import (
+    HYPIT_PROJECTS,
+    configure_local_profile,
+    doctor as hypit_doctor,
+    ensure_pnpm,
+    ensure_project_dir,
+    environment_report as hypit_environment_report,
+    hypit_version,
+    install_ffmpeg_tools,
+    install_hypit_cli,
+    initialize_project as hypit_initialize_project,
+    launch_hypit_studio,
+    run_hypit,
+    start_hypit_process,
+)
 from jianying_service import (
     create_jianying_draft,
     detect_jianying_versions,
@@ -2003,6 +2018,420 @@ class JianyingPage(QtWidgets.QWidget):
             )
 
 
+class HypitCommandThread(QtCore.QThread):
+    line = QtCore.Signal(str)
+    error = QtCore.Signal(str)
+    finished = QtCore.Signal(int)
+
+    def __init__(self, args: list[str], cwd: str, parent=None):
+        super().__init__(parent)
+        self.args = args
+        self.cwd = cwd
+        self.process = None
+
+    def cancel(self) -> None:
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+
+    def run(self) -> None:
+        try:
+            self.process = start_hypit_process(self.args, cwd=self.cwd)
+            if self.process.stdout:
+                for line in self.process.stdout:
+                    self.line.emit(line.rstrip())
+            code = self.process.wait()
+            self.finished.emit(code)
+        except Exception as exc:
+            self.error.emit(str(exc))
+            self.finished.emit(-1)
+
+
+class HypitSetupThread(QtCore.QThread):
+    line = QtCore.Signal(str)
+    error = QtCore.Signal(str)
+    finished = QtCore.Signal(bool)
+
+    def run(self) -> None:
+        try:
+            self.line.emit("检查 pnpm...")
+            pnpm = ensure_pnpm()
+            self.line.emit(f"pnpm: {pnpm}")
+            self.line.emit("检查 FFmpeg / FFprobe...")
+            ffmpeg, ffprobe = install_ffmpeg_tools()
+            self.line.emit(f"ffmpeg: {ffmpeg}")
+            self.line.emit(f"ffprobe: {ffprobe}")
+            self.line.emit("安装 Hypit CLI 0.2.12...")
+            hypit = install_hypit_cli()
+            self.line.emit(f"Hypit: {hypit}")
+            self.finished.emit(True)
+        except Exception as exc:
+            self.error.emit(str(exc))
+            self.finished.emit(False)
+
+
+class HypitInitializeThread(QtCore.QThread):
+    line = QtCore.Signal(str)
+    error = QtCore.Signal(str)
+    finished = QtCore.Signal(bool)
+
+    def __init__(self, project_dir: str, parent=None):
+        super().__init__(parent)
+        self.project_dir = project_dir
+
+    def run(self) -> None:
+        try:
+            result = hypit_initialize_project(self.project_dir)
+            if result.stdout:
+                for line in result.stdout.splitlines():
+                    self.line.emit(line)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "Runtime 初始化失败。")
+            profile = configure_local_profile(self.project_dir)
+            self.line.emit(f"已配置本地 Edge、FFmpeg 和 FFprobe：{profile}")
+            self.finished.emit(True)
+        except Exception as exc:
+            self.error.emit(str(exc))
+            self.finished.emit(False)
+
+
+class HypitPage(QtWidgets.QWidget):
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.command_thread: HypitCommandThread | None = None
+        self.setup_thread: HypitSetupThread | None = None
+        self.initialize_thread: HypitInitializeThread | None = None
+
+        root = QtWidgets.QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+
+        side = card_frame()
+        side.setMinimumWidth(380)
+        side_layout = QtWidgets.QVBoxLayout(side)
+        side_layout.setContentsMargins(18, 18, 18, 18)
+        side_layout.setSpacing(10)
+        side_layout.addWidget(section_label("Hypit 视频引擎"))
+        side_layout.addWidget(
+            hint_label(
+                "Hypit 作为独立 Node.js 视频工作流引擎运行。"
+                "生成前仍需选择 HypiHub 或自有 Provider，正式 Build 可能产生模型费用。"
+            )
+        )
+
+        self.environment_label = QtWidgets.QPlainTextEdit()
+        self.environment_label.setReadOnly(True)
+        self.environment_label.setFixedHeight(150)
+        self.refresh_environment_text()
+        side_layout.addWidget(self.environment_label)
+
+        project_row = QtWidgets.QHBoxLayout()
+        self.project_name_edit = QtWidgets.QLineEdit("张小星Hypit项目")
+        create_project_button = QtWidgets.QPushButton("创建项目")
+        create_project_button.setObjectName("secondaryButton")
+        create_project_button.clicked.connect(self.create_project)
+        project_row.addWidget(self.project_name_edit, 1)
+        project_row.addWidget(create_project_button)
+        side_layout.addLayout(project_row)
+
+        project_path_row = QtWidgets.QHBoxLayout()
+        default_project = ensure_project_dir(self.project_name_edit.text())
+        self.project_path_edit = QtWidgets.QLineEdit(str(default_project))
+        browse_project = QtWidgets.QPushButton("项目目录")
+        browse_project.setObjectName("secondaryButton")
+        browse_project.clicked.connect(self.browse_project)
+        project_path_row.addWidget(self.project_path_edit, 1)
+        project_path_row.addWidget(browse_project)
+        side_layout.addLayout(project_path_row)
+
+        svrun_row = QtWidgets.QHBoxLayout()
+        self.svrun_edit = QtWidgets.QLineEdit()
+        self.svrun_edit.setPlaceholderText("选择 .svrun 运行文件")
+        browse_svrun = QtWidgets.QPushButton("选择SVRun")
+        browse_svrun.setObjectName("secondaryButton")
+        browse_svrun.clicked.connect(self.browse_svrun)
+        svrun_row.addWidget(self.svrun_edit, 1)
+        svrun_row.addWidget(browse_svrun)
+        side_layout.addLayout(svrun_row)
+
+        buttons = QtWidgets.QGridLayout()
+        self.check_button = QtWidgets.QPushButton("检查环境")
+        self.install_button = QtWidgets.QPushButton("安装/修复环境")
+        self.runtime_button = QtWidgets.QPushButton("初始化 Runtime")
+        self.prepare_runtime_button = QtWidgets.QPushButton("准备 Runtime")
+        self.doctor_button = QtWidgets.QPushButton("Doctor")
+        self.plan_button = QtWidgets.QPushButton("Plan")
+        self.build_button = QtWidgets.QPushButton("Build")
+        self.status_button = QtWidgets.QPushButton("查看状态")
+        self.get_button = QtWidgets.QPushButton("导出结果")
+        self.studio_button = QtWidgets.QPushButton("打开 Studio")
+        for button in (
+            self.check_button,
+            self.install_button,
+            self.runtime_button,
+            self.prepare_runtime_button,
+            self.doctor_button,
+            self.plan_button,
+            self.build_button,
+            self.status_button,
+            self.get_button,
+            self.studio_button,
+        ):
+            button.setObjectName("secondaryButton")
+        self.check_button.clicked.connect(self.check_environment)
+        self.install_button.clicked.connect(self.install_environment)
+        self.runtime_button.clicked.connect(self.initialize_runtime)
+        self.prepare_runtime_button.clicked.connect(self.prepare_runtime)
+        self.doctor_button.clicked.connect(self.run_doctor)
+        self.plan_button.clicked.connect(self.run_plan)
+        self.build_button.clicked.connect(self.run_build)
+        self.status_button.clicked.connect(self.run_status)
+        self.get_button.clicked.connect(self.get_output)
+        self.studio_button.clicked.connect(self.open_studio)
+        button_specs = [
+            self.check_button,
+            self.install_button,
+            self.runtime_button,
+            self.prepare_runtime_button,
+            self.doctor_button,
+            self.plan_button,
+            self.build_button,
+            self.status_button,
+            self.get_button,
+            self.studio_button,
+        ]
+        for index, button in enumerate(button_specs):
+            buttons.addWidget(button, index // 3, index % 3)
+        side_layout.addLayout(buttons)
+
+        self.build_id_edit = QtWidgets.QLineEdit()
+        self.build_id_edit.setPlaceholderText("Build ID")
+        self.output_name_edit = QtWidgets.QLineEdit()
+        self.output_name_edit.setPlaceholderText("Output 名称，例如 final.video")
+        export_row = QtWidgets.QHBoxLayout()
+        self.export_path_edit = QtWidgets.QLineEdit()
+        self.export_path_edit.setPlaceholderText("导出文件路径")
+        browse_export = QtWidgets.QPushButton("导出路径")
+        browse_export.setObjectName("secondaryButton")
+        browse_export.clicked.connect(self.browse_export)
+        export_row.addWidget(self.export_path_edit, 1)
+        export_row.addWidget(browse_export)
+        side_layout.addWidget(self.build_id_edit)
+        side_layout.addWidget(self.output_name_edit)
+        side_layout.addLayout(export_row)
+        self.stop_button = QtWidgets.QPushButton("停止当前命令")
+        self.stop_button.setObjectName("secondaryButton")
+        self.stop_button.clicked.connect(self.stop_command)
+        side_layout.addWidget(self.stop_button)
+        side_layout.addStretch(1)
+
+        log_card = card_frame()
+        log_layout = QtWidgets.QVBoxLayout(log_card)
+        log_layout.setContentsMargins(16, 16, 16, 16)
+        log_layout.addWidget(section_label("Hypit 运行日志"))
+        self.log_edit = QtWidgets.QPlainTextEdit()
+        self.log_edit.setReadOnly(True)
+        log_layout.addWidget(self.log_edit, 1)
+
+        root.addWidget(scrollable_side_card(side, width=430))
+        root.addWidget(log_card, 1)
+        self.append_log("Hypit 独立栏目已就绪。")
+
+    def refresh_environment_text(self) -> None:
+        self.environment_label.setPlainText(hypit_environment_report())
+
+    def append_log(self, text: str) -> None:
+        self.log_edit.appendPlainText(text)
+
+    def create_project(self) -> None:
+        path = ensure_project_dir(self.project_name_edit.text())
+        self.project_path_edit.setText(str(path))
+        self.append_log(f"项目目录已创建：{path}")
+
+    def browse_project(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "选择 Hypit 项目目录",
+            self.project_path_edit.text(),
+        )
+        if path:
+            self.project_path_edit.setText(path)
+
+    def browse_svrun(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "选择 SVRun 文件",
+            self.project_path_edit.text(),
+            "Hypit Run (*.svrun);;所有文件 (*)",
+        )
+        if path:
+            self.svrun_edit.setText(path)
+
+    def browse_export(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "导出 Hypit 结果",
+            self.export_path_edit.text() or str(Path.home() / "hypit-output.mp4"),
+            "视频文件 (*.mp4 *.mov *.webm);;所有文件 (*)",
+        )
+        if path:
+            self.export_path_edit.setText(path)
+
+    def set_busy(self, busy: bool) -> None:
+        for button in (
+            self.check_button,
+            self.install_button,
+            self.runtime_button,
+            self.prepare_runtime_button,
+            self.doctor_button,
+            self.plan_button,
+            self.build_button,
+            self.status_button,
+            self.get_button,
+            self.studio_button,
+        ):
+            button.setEnabled(not busy)
+        self.stop_button.setEnabled(busy)
+
+    def check_environment(self) -> None:
+        self.refresh_environment_text()
+        try:
+            version = hypit_version()
+            self.append_log(f"Hypit CLI 版本：{version}")
+            self.append_log(hypit_environment_report())
+        except Exception as exc:
+            self.append_log(f"环境检查失败：{exc}")
+
+    def install_environment(self) -> None:
+        if thread_is_running(self.setup_thread):
+            return
+        self.set_busy(True)
+        self.setup_thread = HypitSetupThread(self)
+        self.setup_thread.line.connect(self.append_log)
+        self.setup_thread.error.connect(lambda message: self.append_log(f"安装失败：{message}"))
+        self.setup_thread.finished.connect(self._on_setup_finished)
+        self.setup_thread.finished.connect(
+            lambda thread=self.setup_thread: self._clear_setup_thread(thread)
+        )
+        self.setup_thread.start()
+
+    def _clear_setup_thread(self, thread: HypitSetupThread) -> None:
+        if self.setup_thread is thread:
+            self.setup_thread = None
+
+    def _on_setup_finished(self, success: bool) -> None:
+        self.set_busy(False)
+        self.refresh_environment_text()
+        self.append_log("Hypit 环境安装完成。" if success else "Hypit 环境安装未完成。")
+
+    def run_command(self, args: list[str], label: str) -> None:
+        if thread_is_running(self.command_thread):
+            QtWidgets.QMessageBox.information(self, "Hypit 正在运行", "请先停止当前命令。")
+            return
+        project = self.project_path_edit.text().strip()
+        if not project or not Path(project).exists():
+            QtWidgets.QMessageBox.warning(self, "缺少项目目录", "请先创建或选择 Hypit 项目目录。")
+            return
+        self.set_busy(True)
+        self.append_log(f"$ hypit {' '.join(args)}")
+        self.command_thread = HypitCommandThread(args, project, self)
+        self.command_thread.line.connect(self.append_log)
+        self.command_thread.error.connect(lambda message: self.append_log(f"错误：{message}"))
+        self.command_thread.finished.connect(self._on_command_finished)
+        self.command_thread.finished.connect(
+            lambda code=0, thread=self.command_thread: self._clear_command_thread(thread)
+        )
+        self.command_thread.start()
+
+    def _clear_command_thread(self, thread: HypitCommandThread) -> None:
+        if self.command_thread is thread:
+            self.command_thread = None
+
+    def _on_command_finished(self, code: int) -> None:
+        self.set_busy(False)
+        self.append_log(f"命令结束，退出码：{code}")
+
+    def stop_command(self) -> None:
+        if self.command_thread:
+            self.command_thread.cancel()
+            self.append_log("已请求停止 Hypit 命令。")
+
+    def initialize_runtime(self) -> None:
+        if thread_is_running(self.initialize_thread):
+            return
+        project = self.project_path_edit.text().strip()
+        if not project or not Path(project).exists():
+            QtWidgets.QMessageBox.warning(self, "缺少项目目录", "请先创建或选择 Hypit 项目目录。")
+            return
+        self.set_busy(True)
+        self.append_log("$ hypit runtime init")
+        self.initialize_thread = HypitInitializeThread(project, self)
+        self.initialize_thread.line.connect(self.append_log)
+        self.initialize_thread.error.connect(lambda message: self.append_log(f"错误：{message}"))
+        self.initialize_thread.finished.connect(self._on_initialize_finished)
+        self.initialize_thread.finished.connect(
+            lambda thread=self.initialize_thread: self._clear_initialize_thread(thread)
+        )
+        self.initialize_thread.start()
+
+    def _clear_initialize_thread(self, thread: HypitInitializeThread) -> None:
+        if self.initialize_thread is thread:
+            self.initialize_thread = None
+
+    def _on_initialize_finished(self, success: bool) -> None:
+        self.set_busy(False)
+        self.append_log("Runtime 初始化完成。" if success else "Runtime 初始化未完成。")
+
+    def prepare_runtime(self) -> None:
+        self.run_command(["runtime", "up"], "runtime up")
+
+    def run_doctor(self) -> None:
+        self.run_command(["doctor"], "doctor")
+
+    def _require_svrun(self) -> str | None:
+        svrun = self.svrun_edit.text().strip()
+        if not svrun or not Path(svrun).exists():
+            QtWidgets.QMessageBox.warning(self, "缺少 SVRun", "请选择有效的 .svrun 运行文件。")
+            return None
+        return svrun
+
+    def run_plan(self) -> None:
+        svrun = self._require_svrun()
+        if svrun:
+            self.run_command(["plan", svrun], "plan")
+
+    def run_build(self) -> None:
+        svrun = self._require_svrun()
+        if svrun:
+            self.run_command(["build", svrun, "--follow"], "build")
+
+    def run_status(self) -> None:
+        build_id = self.build_id_edit.text().strip()
+        if not build_id:
+            QtWidgets.QMessageBox.warning(self, "缺少 Build ID", "请输入 Build ID。")
+            return
+        self.run_command(["status", build_id], "status")
+
+    def get_output(self) -> None:
+        build_id = self.build_id_edit.text().strip()
+        output = self.output_name_edit.text().strip()
+        target = self.export_path_edit.text().strip()
+        if not build_id or not output or not target:
+            QtWidgets.QMessageBox.warning(self, "信息不完整", "请填写 Build ID、Output 名称和导出路径。")
+            return
+        self.run_command(["get", build_id, "--output", output, "--to", target], "get")
+
+    def open_studio(self) -> None:
+        svrun = self._require_svrun()
+        if not svrun:
+            return
+        try:
+            launch_hypit_studio(["--run", svrun], cwd=self.project_path_edit.text().strip())
+            self.append_log("Hypit Studio 已启动。")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Studio 启动失败", str(exc))
+
+
 class PublishAssistThread(QtCore.QThread):
     result = QtCore.Signal(dict)
     error = QtCore.Signal(str)
@@ -2689,7 +3118,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.nav_group = QtWidgets.QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        nav_labels = ["图文生成", "视频生成", "批量处理", "剪映草稿", "发布中心", "模型中心", "配置"]
+        nav_labels = [
+            "图文生成",
+            "视频生成",
+            "批量处理",
+            "剪映草稿",
+            "Hypit视频",
+            "发布中心",
+            "模型中心",
+            "配置",
+        ]
         self.nav_buttons: list[QtWidgets.QPushButton] = []
         for index, label in enumerate(nav_labels):
             button = QtWidgets.QPushButton(label)
@@ -2711,6 +3149,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_page = VideoPage(self)
         self.batch_page = BatchPage(self)
         self.jianying_page = JianyingPage(self)
+        self.hypit_page = HypitPage(self)
         self.publish_page = PublishPage(self)
         self.models_page = ModelsPage(self)
         self.settings_page = SettingsPage(self)
@@ -2722,6 +3161,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_page,
             self.batch_page,
             self.jianying_page,
+            self.hypit_page,
             self.publish_page,
             self.models_page,
             self.settings_page,
