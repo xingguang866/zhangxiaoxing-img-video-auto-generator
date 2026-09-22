@@ -115,6 +115,10 @@ def thread_is_running(thread: QtCore.QThread | None) -> bool:
         return False
 
 
+def count_chinese_characters(value: str) -> int:
+    return len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]", value))
+
+
 def safe_filename(value: str, max_length: int = 40) -> str:
     value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
     value = re.sub(r"\s+", "_", value)
@@ -785,12 +789,24 @@ class ImagePage(BaseGenerationPage):
         cover_form.setSpacing(10)
         self.cover_title_edit = QtWidgets.QLineEdit()
         self.cover_title_edit.setPlaceholderText("封面主标题，例如：久坐党别忽略这件事")
-        self.cover_title_edit.setMaxLength(24)
+        self.cover_title_edit.setMaxLength(40)
         self.cover_subtitle_edit = QtWidgets.QLineEdit()
         self.cover_subtitle_edit.setPlaceholderText("封面副标题，可选")
-        cover_form.addRow("主标题", self.cover_title_edit)
+        self.cover_counter_label = QtWidgets.QLabel("0/14")
+        self.cover_counter_label.setObjectName("counterLabel")
+        self.cover_counter_label.setMinimumWidth(54)
+        self.cover_counter_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        cover_title_row = QtWidgets.QWidget()
+        cover_title_layout = QtWidgets.QHBoxLayout(cover_title_row)
+        cover_title_layout.setContentsMargins(0, 0, 0, 0)
+        cover_title_layout.setSpacing(8)
+        cover_title_layout.addWidget(self.cover_title_edit, 1)
+        cover_title_layout.addWidget(self.cover_counter_label)
+        cover_form.addRow("主标题", cover_title_row)
         cover_form.addRow("副标题", self.cover_subtitle_edit)
         side_layout.addLayout(cover_form)
+        self.cover_title_edit.textChanged.connect(self.update_cover_counter)
+        self.update_cover_counter("")
         side_layout.addWidget(
             hint_label("建议主标题控制在 14 个字以内，封面会优先保证大字和远距离可读性。")
         )
@@ -891,6 +907,12 @@ class ImagePage(BaseGenerationPage):
             self.output_edit.text().strip(),
         )
 
+    def update_cover_counter(self, text: str) -> None:
+        count = count_chinese_characters(text)
+        self.cover_counter_label.setText(f"{count}/14")
+        color = "#D64B73" if count > 14 else "#3E8767"
+        self.cover_counter_label.setStyleSheet(f"color: {color}; font-weight: 700;")
+
     def generate_cover(self) -> None:
         theme = self.theme_edit.text().strip()
         title = self.cover_title_edit.text().strip() or theme
@@ -902,6 +924,18 @@ class ImagePage(BaseGenerationPage):
                 "请填写封面主标题，或先在主题中填写主题。",
             )
             return
+        chinese_count = count_chinese_characters(title)
+        if chinese_count > 14:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "标题可能过长",
+                f"当前主标题包含 {chinese_count} 个汉字，超过建议的 14 个。\n"
+                "汉字过多时，模型可能自动缩小字号。是否仍要继续生成？",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
 
         settings = self.current_settings()
         settings.update(

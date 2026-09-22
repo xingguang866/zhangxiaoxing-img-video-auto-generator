@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6 import QtWidgets
 
 from api_client import APIClientError, APIMartClient
-from app import FALLBACK_MODEL_CATALOG, MainWindow
+from app import FALLBACK_MODEL_CATALOG, MainWindow, count_chinese_characters
 from batch_parser import create_batch_template, load_batch_items
 from jianying_service import create_jianying_draft
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
@@ -37,7 +37,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn("久坐党别忽略这件事", cover)
         self.assertIn("三个习惯现在就改", cover)
         self.assertIn("超大字号", cover)
-        self.assertIn("30%至45%", cover)
+        self.assertIn("45%至60%", cover)
+        self.assertEqual(count_chinese_characters("以下这5类人"), 5)
 
     def test_model_parameter_validation(self):
         duration, resolution = APIMartClient._normalize_video_parameters(
@@ -189,7 +190,9 @@ class CoreTests(unittest.TestCase):
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["chat"]), 0)
         self.assertTrue(window.image_page.output_edit.text())
         self.assertTrue(window.image_page.cover_title_edit.placeholderText())
-        self.assertEqual(window.image_page.cover_title_edit.maxLength(), 24)
+        self.assertEqual(window.image_page.cover_title_edit.maxLength(), 40)
+        window.image_page.cover_title_edit.setText("测试封面标题超过十四个汉字需要提醒用户")
+        self.assertEqual(window.image_page.cover_counter_label.text(), "19/14")
         self.assertEqual(window.image_page.cover_button.text(), "生成封面图")
         self.assertTrue(window.video_page.output_edit.text())
         self.assertTrue(window.batch_page.output_edit.text())
