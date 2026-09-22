@@ -21,10 +21,12 @@ from hypit_service import (
     ensure_project_dir,
     environment_report as hypit_environment_report,
     hypit_version,
+    install_apib_provider,
     install_ffmpeg_tools,
     install_hypit_cli,
     initialize_project as hypit_initialize_project,
     launch_hypit_studio,
+    login_apib_credential,
     run_hypit,
     start_hypit_process,
 )
@@ -2094,6 +2096,35 @@ class HypitInitializeThread(QtCore.QThread):
             self.finished.emit(False)
 
 
+class HypitApibSetupThread(QtCore.QThread):
+    line = QtCore.Signal(str)
+    error = QtCore.Signal(str)
+    finished = QtCore.Signal(bool)
+
+    def __init__(self, project_dir: str, api_key: str, parent=None):
+        super().__init__(parent)
+        self.project_dir = project_dir
+        self.api_key = api_key
+
+    def run(self) -> None:
+        try:
+            self.line.emit("安装 APIB Provider 项目包...")
+            destination = install_apib_provider(self.project_dir)
+            self.line.emit(f"Provider 已安装：{destination}")
+            self.line.emit("写入 Hypit 平台凭据存储...")
+            result = login_apib_credential(self.project_dir, self.api_key)
+            if result.stdout:
+                self.line.emit(result.stdout.strip())
+            if result.returncode != 0:
+                raise RuntimeError(
+                    result.stderr.strip() or "APIB 凭据写入失败。"
+                )
+            self.finished.emit(True)
+        except Exception as exc:
+            self.error.emit(str(exc))
+            self.finished.emit(False)
+
+
 class HypitPage(QtWidgets.QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -2101,6 +2132,7 @@ class HypitPage(QtWidgets.QWidget):
         self.command_thread: HypitCommandThread | None = None
         self.setup_thread: HypitSetupThread | None = None
         self.initialize_thread: HypitInitializeThread | None = None
+        self.apib_thread: HypitApibSetupThread | None = None
 
         root = QtWidgets.QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2121,7 +2153,13 @@ class HypitPage(QtWidgets.QWidget):
 
         self.environment_label = QtWidgets.QPlainTextEdit()
         self.environment_label.setReadOnly(True)
-        self.environment_label.setFixedHeight(150)
+        self.environment_label.setLineWrapMode(
+            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
+        )
+        self.environment_label.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.environment_label.setFixedHeight(190)
         self.refresh_environment_text()
         side_layout.addWidget(self.environment_label)
 
@@ -2137,6 +2175,8 @@ class HypitPage(QtWidgets.QWidget):
         project_path_row = QtWidgets.QHBoxLayout()
         default_project = ensure_project_dir(self.project_name_edit.text())
         self.project_path_edit = QtWidgets.QLineEdit(str(default_project))
+        self.project_path_edit.setToolTip(str(default_project))
+        self.project_path_edit.textChanged.connect(self.project_path_edit.setToolTip)
         browse_project = QtWidgets.QPushButton("项目目录")
         browse_project.setObjectName("secondaryButton")
         browse_project.clicked.connect(self.browse_project)
@@ -2147,6 +2187,7 @@ class HypitPage(QtWidgets.QWidget):
         svrun_row = QtWidgets.QHBoxLayout()
         self.svrun_edit = QtWidgets.QLineEdit()
         self.svrun_edit.setPlaceholderText("选择 .svrun 运行文件")
+        self.svrun_edit.textChanged.connect(self.svrun_edit.setToolTip)
         browse_svrun = QtWidgets.QPushButton("选择SVRun")
         browse_svrun.setObjectName("secondaryButton")
         browse_svrun.clicked.connect(self.browse_svrun)
@@ -2159,6 +2200,7 @@ class HypitPage(QtWidgets.QWidget):
         self.install_button = QtWidgets.QPushButton("安装/修复环境")
         self.runtime_button = QtWidgets.QPushButton("初始化 Runtime")
         self.prepare_runtime_button = QtWidgets.QPushButton("准备 Runtime")
+        self.apib_button = QtWidgets.QPushButton("配置 APIB Provider")
         self.doctor_button = QtWidgets.QPushButton("Doctor")
         self.plan_button = QtWidgets.QPushButton("Plan")
         self.build_button = QtWidgets.QPushButton("Build")
@@ -2170,6 +2212,7 @@ class HypitPage(QtWidgets.QWidget):
             self.install_button,
             self.runtime_button,
             self.prepare_runtime_button,
+            self.apib_button,
             self.doctor_button,
             self.plan_button,
             self.build_button,
@@ -2182,6 +2225,7 @@ class HypitPage(QtWidgets.QWidget):
         self.install_button.clicked.connect(self.install_environment)
         self.runtime_button.clicked.connect(self.initialize_runtime)
         self.prepare_runtime_button.clicked.connect(self.prepare_runtime)
+        self.apib_button.clicked.connect(self.configure_apib_provider)
         self.doctor_button.clicked.connect(self.run_doctor)
         self.plan_button.clicked.connect(self.run_plan)
         self.build_button.clicked.connect(self.run_build)
@@ -2193,6 +2237,7 @@ class HypitPage(QtWidgets.QWidget):
             self.install_button,
             self.runtime_button,
             self.prepare_runtime_button,
+            self.apib_button,
             self.doctor_button,
             self.plan_button,
             self.build_button,
@@ -2201,7 +2246,8 @@ class HypitPage(QtWidgets.QWidget):
             self.studio_button,
         ]
         for index, button in enumerate(button_specs):
-            buttons.addWidget(button, index // 3, index % 3)
+            button.setMinimumHeight(36)
+            buttons.addWidget(button, index // 2, index % 2)
         side_layout.addLayout(buttons)
 
         self.build_id_edit = QtWidgets.QLineEdit()
@@ -2211,6 +2257,9 @@ class HypitPage(QtWidgets.QWidget):
         export_row = QtWidgets.QHBoxLayout()
         self.export_path_edit = QtWidgets.QLineEdit()
         self.export_path_edit.setPlaceholderText("导出文件路径")
+        self.export_path_edit.textChanged.connect(
+            self.export_path_edit.setToolTip
+        )
         browse_export = QtWidgets.QPushButton("导出路径")
         browse_export.setObjectName("secondaryButton")
         browse_export.clicked.connect(self.browse_export)
@@ -2233,7 +2282,7 @@ class HypitPage(QtWidgets.QWidget):
         self.log_edit.setReadOnly(True)
         log_layout.addWidget(self.log_edit, 1)
 
-        root.addWidget(scrollable_side_card(side, width=430))
+        root.addWidget(scrollable_side_card(side, width=470))
         root.addWidget(log_card, 1)
         self.append_log("Hypit 独立栏目已就绪。")
 
@@ -2283,6 +2332,7 @@ class HypitPage(QtWidgets.QWidget):
             self.install_button,
             self.runtime_button,
             self.prepare_runtime_button,
+            self.apib_button,
             self.doctor_button,
             self.plan_button,
             self.build_button,
@@ -2384,6 +2434,40 @@ class HypitPage(QtWidgets.QWidget):
 
     def prepare_runtime(self) -> None:
         self.run_command(["runtime", "up"], "runtime up")
+
+    def configure_apib_provider(self) -> None:
+        if thread_is_running(self.apib_thread):
+            return
+        project = self.project_path_edit.text().strip()
+        if not project or not Path(project).exists():
+            QtWidgets.QMessageBox.warning(self, "缺少项目目录", "请先创建或选择 Hypit 项目目录。")
+            return
+        api_key = self.main_window.settings_store.as_dict()["api_key"].strip()
+        if not api_key:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "缺少 APIB API Key",
+                "请先在“配置”页面填写 APIB API Key。",
+            )
+            return
+        self.set_busy(True)
+        self.append_log("开始安装 APIB Provider。")
+        self.apib_thread = HypitApibSetupThread(project, api_key, self)
+        self.apib_thread.line.connect(self.append_log)
+        self.apib_thread.error.connect(lambda message: self.append_log(f"APIB 配置失败：{message}"))
+        self.apib_thread.finished.connect(self._on_apib_finished)
+        self.apib_thread.finished.connect(
+            lambda thread=self.apib_thread: self._clear_apib_thread(thread)
+        )
+        self.apib_thread.start()
+
+    def _clear_apib_thread(self, thread: HypitApibSetupThread) -> None:
+        if self.apib_thread is thread:
+            self.apib_thread = None
+
+    def _on_apib_finished(self, success: bool) -> None:
+        self.set_busy(False)
+        self.append_log("APIB Provider 配置完成。" if success else "APIB Provider 配置未完成。")
 
     def run_doctor(self) -> None:
         self.run_command(["doctor"], "doctor")

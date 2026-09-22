@@ -310,6 +310,10 @@ def configure_local_profile(project_dir: str | Path) -> Path:
 
     document = json.loads(profile.read_text(encoding="utf-8"))
     endpoints = document.setdefault("endpoints", {})
+    endpoints.setdefault(
+        "image-opencv.local",
+        {"use": "@hypit/provider-image-opencv-local"},
+    )
     hyperframes = endpoints.setdefault(
         "hyperframes.local",
         {"use": "@hypit/provider-hyperframes-local"},
@@ -328,7 +332,90 @@ def configure_local_profile(project_dir: str | Path) -> Path:
         json.dumps(document, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    bindings = document.setdefault("bindings", {})
+    bindings.setdefault(
+        "@hypit/raster@1#execute-raster",
+        "image-opencv.local",
+    )
+    profile.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return profile
+
+
+def install_apib_provider(project_dir: str | Path) -> Path:
+    project = Path(project_dir)
+    source = Path(__file__).resolve().parent / "hypit_provider_apib"
+    if not source.exists():
+        raise RuntimeError("APIB Provider 模板不存在。")
+    destination = project / "packages" / "provider-apib"
+    destination.mkdir(parents=True, exist_ok=True)
+    for item in source.rglob("*"):
+        if not item.is_file():
+            continue
+        relative = item.relative_to(source)
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, target)
+
+    profile = project / "hypit.runtime.json"
+    if not profile.exists():
+        raise RuntimeError("未找到 hypit.runtime.json，请先初始化 Runtime。")
+    document = json.loads(profile.read_text(encoding="utf-8"))
+    endpoints = document.setdefault("endpoints", {})
+    endpoints["apib.default"] = {
+        "use": "@zhangxiaoxing/provider-apib",
+        "pool": "apib.default",
+        "config": {
+            "baseUrl": "https://api.apib.ai/v1",
+            "apiKey": {"store": "platform", "key": "apib.api-key"},
+            "concurrency": 2,
+            "pollIntervalMs": 5000,
+        },
+    }
+    bindings = document.setdefault("bindings", {})
+    for capability in (
+        "@hypit/gpt-image@1#gpt-image-2",
+        "@hypit/seedream@1#seedream-5-lite",
+        "@hypit/nano-banana@1#nano-banana-2",
+        "@hypit/nano-banana@1#nano-banana-pro",
+        "@hypit/seedance@1#seedance-2",
+        "@hypit/seedance@1#seedance-2-fast",
+        "@hypit/seedance@1#seedance-2-mini",
+        "@hypit/seedance@1#seedance-2.5",
+    ):
+        bindings[capability] = "apib.default"
+    profile.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return destination
+
+
+def login_apib_credential(
+    project_dir: str | Path,
+    api_key: str,
+) -> subprocess.CompletedProcess[str]:
+    if not api_key.strip():
+        raise RuntimeError("APIB API Key 为空。")
+    secret_path = APP_DATA / "apib-key.tmp"
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        secret_path.write_text(api_key.strip(), encoding="utf-8")
+        return run_hypit(
+            [
+                "auth",
+                "login",
+                "apib.default",
+                "--from",
+                str(secret_path),
+            ],
+            cwd=project_dir,
+            timeout=120,
+        )
+    finally:
+        secret_path.unlink(missing_ok=True)
 
 
 def doctor(project_dir: str | Path) -> subprocess.CompletedProcess[str]:

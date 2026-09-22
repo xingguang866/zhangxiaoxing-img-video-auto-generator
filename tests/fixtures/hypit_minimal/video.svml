@@ -1,0 +1,21 @@
+<?svml using="@hypit/markup@1"?>
+
+<svml>
+  <import as="text" from="@hypit/text@1"/>
+  <import as="seedance" from="@hypit/seedance@1"/>
+
+  <text:Value id="prompt">
+    Vertical nine-by-sixteen social video. A clean paper notebook on a desk.
+    A hand gently turns one page while soft daylight moves across the page.
+    Calm, natural, uncluttered, no text and no logo.
+  </text:Value>
+
+  <seedance:TextVideo
+    id="take"
+    model="mini"
+    prompt={prompt}
+    duration="5"
+    resolution="720p"
+    aspect-ratio="9:16"
+    web-search="false"/>
+</svml>

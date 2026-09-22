@@ -177,6 +177,30 @@ API Key 使用 Qt 本机设置保存，不会写入源码文件。
 
 完整视频生成仍需要选择模型服务。可选 HypiHub 托管账户，或为现有 API 服务编写 Hypit Provider。未选择 Provider 前，Doctor 会提示缺少对应凭据。
 
+### 使用现有 APIB API
+
+软件已经内置项目级 `@zhangxiaoxing/provider-apib`，可直接复用“配置”页面中的 APIB API Key。
+
+已绑定的模型：
+
+- GPT Image 2
+- Seedream 5.0 Lite
+- Nano Banana 2 / Pro
+- Seedance 2.0 / Fast / Mini
+- Seedance 2.5
+
+配置步骤：
+
+1. 进入“Hypit视频”。
+2. 点击“初始化 Runtime”。
+3. 点击“配置 APIB Provider”。
+4. 软件会安装 Provider、写入 APIB Key，并绑定上述模型。
+5. 点击“Doctor”检查环境。
+6. 选择 `.svrun` 后先执行“Plan”，确认请求路由到 `apib.default`。
+7. 确认计划与费用后再执行“Build”。
+
+APIB Key 通过 Hypit 平台凭据存储管理，不写入 Hypit 源码、Runtime Profile 或项目工程文件。
+
 ## 发布中心
 
 “发布中心”第一阶段的定位是一键准备、分发和确认发布，不依赖平台发布 API 审核。

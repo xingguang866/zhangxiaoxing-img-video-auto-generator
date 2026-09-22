@@ -20,7 +20,11 @@ from app import (
 )
 from batch_parser import BatchItem, create_batch_template, load_batch_items
 from jianying_service import create_jianying_draft
-from hypit_service import environment as hypit_environment, hypit_version
+from hypit_service import (
+    environment as hypit_environment,
+    hypit_version,
+    install_apib_provider,
+)
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_pricing, format_usage
 from publish_platforms import build_platform_posts
@@ -223,6 +227,23 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(info.ffprobe)
         self.assertTrue(info.hypit)
         self.assertEqual(hypit_version(), "0.2.12")
+
+    def test_apib_provider_installation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            profile = project / "hypit.runtime.json"
+            profile.write_text("{}", encoding="utf-8")
+            destination = install_apib_provider(project)
+            self.assertTrue((destination / "src" / "provider.ts").exists())
+            document = json.loads(profile.read_text(encoding="utf-8"))
+            self.assertEqual(
+                document["endpoints"]["apib.default"]["use"],
+                "@zhangxiaoxing/provider-apib",
+            )
+            self.assertEqual(
+                document["bindings"]["@hypit/gpt-image@1#gpt-image-2"],
+                "apib.default",
+            )
 
     def test_ui_smoke(self):
         window = MainWindow()

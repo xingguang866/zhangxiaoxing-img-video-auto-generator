@@ -1,0 +1,18 @@
+<?svml using="@hypit/markup@1"?>
+
+<svml>
+  <import as="text" from="@hypit/text@1"/>
+  <import as="gpt" from="@hypit/gpt-image/clean@1"/>
+
+  <text:Value id="prompt">
+    A minimal editorial cover about daily health care. Soft cream paper background,
+    clean typography area, one blue tissue box, no readable words and no logo.
+  </text:Value>
+
+  <gpt:Image
+    id="cover"
+    prompt={prompt}
+    aspect-ratio="9:16"
+    resolution="1K"
+    background="opaque"/>
+</svml>
