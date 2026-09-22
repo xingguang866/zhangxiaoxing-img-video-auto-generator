@@ -374,6 +374,7 @@ def install_apib_provider(project_dir: str | Path) -> Path:
             "pollIntervalMs": 5000,
         },
     }
+    endpoints.pop("hypihub.default", None)
     bindings = document.setdefault("bindings", {})
     for capability in (
         "@hypit/gpt-image@1#gpt-image-2",

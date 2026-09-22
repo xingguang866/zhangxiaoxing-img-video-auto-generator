@@ -327,8 +327,19 @@ function prepare(
     kind: mapping.result === "video" ? "video" : "image",
     model,
     compile: async (resolve) => {
-      const compiled = await compileWireRequest(mapping, request, resolve);
-      const payload = object(compiled, "APIB compiled request");
+      const compiled = object(
+        await compileWireRequest(mapping, request, resolve),
+        "APIB compiled request",
+      );
+      const input = object(
+        compiled.input ?? compiled,
+        "APIB compiled request input",
+      );
+      const payload = {
+        model:
+          typeof compiled.model === "string" ? compiled.model : model,
+        ...input,
+      };
       payload.n = 1;
       payload.nsfw_check = true;
       if (payload.web_search === true) {

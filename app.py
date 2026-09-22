@@ -2147,7 +2147,7 @@ class HypitPage(QtWidgets.QWidget):
         side_layout.addWidget(
             hint_label(
                 "Hypit 作为独立 Node.js 视频工作流引擎运行。"
-                "生成前仍需选择 HypiHub 或自有 Provider，正式 Build 可能产生模型费用。"
+                "默认项目已接入 APIB Provider；正式 Build 前先执行 Plan 并确认模型费用。"
             )
         )
 
