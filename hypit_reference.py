@@ -954,22 +954,30 @@ def build_reference_project(
     build_id = match.group(0)
     notify(f"正在导出成片：{build_id}")
     project.output_path.parent.mkdir(parents=True, exist_ok=True)
-    export = run_hypit(
-        [
-            "get",
-            build_id,
-            "--output",
-            "final.video",
-            "--to",
-            str(project.output_path),
-        ],
-        cwd=project.workspace,
-        timeout=1800,
+    temporary = project.output_path.with_name(
+        f"{project.output_path.stem}.new{project.output_path.suffix}"
     )
-    if export.returncode != 0 or not project.output_path.exists():
-        raise ReferenceWorkflowError(
-            export.stderr.strip()
-            or export.stdout.strip()
-            or "Build 成功，但成片导出失败。"
+    temporary.unlink(missing_ok=True)
+    try:
+        export = run_hypit(
+            [
+                "get",
+                build_id,
+                "--output",
+                "final.video",
+                "--to",
+                str(temporary),
+            ],
+            cwd=project.workspace,
+            timeout=1800,
         )
+        if export.returncode != 0 or not temporary.exists():
+            raise ReferenceWorkflowError(
+                export.stderr.strip()
+                or export.stdout.strip()
+                or "Build 成功，但成片导出失败。"
+            )
+        temporary.replace(project.output_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return project.output_path

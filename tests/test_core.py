@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -29,7 +31,9 @@ from hypit_service import (
 )
 from hypit_reference import (
     ReferenceWorkflowError,
+    ReferenceProject,
     align_duration_to_frame,
+    build_reference_project,
     frames_for_duration,
     heuristic_analysis,
     is_douyin_url,
@@ -456,6 +460,47 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(payload["providerRequestCount"], 0)
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_hypit_reference_export_replaces_existing_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            run_dir = workspace / "run"
+            output = run_dir / "output" / "final.mp4"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"old-video")
+            project = ReferenceProject(
+                workspace=workspace,
+                run_dir=run_dir,
+                media_path=run_dir / "assets" / "reference.mp4",
+                analysis_path=run_dir / "analysis.json",
+                svml_path=run_dir / "main.svml",
+                svrun_path=run_dir / "project.svrun",
+                output_path=output,
+                analysis={},
+            )
+
+            def fake_run(arguments, **kwargs):
+                if arguments[0] == "build":
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        0,
+                        stdout="Build bld_test_123 completed",
+                        stderr="",
+                    )
+                destination = Path(arguments[arguments.index("--to") + 1])
+                destination.write_bytes(b"new-video")
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout="downloaded",
+                    stderr="",
+                )
+
+            with patch("hypit_reference.run_hypit", side_effect=fake_run):
+                result = build_reference_project(project)
+            self.assertEqual(result, output)
+            self.assertEqual(output.read_bytes(), b"new-video")
+            self.assertFalse((output.parent / "final.new.mp4").exists())
 
     def test_hypit_originality_project_generation(self):
         workspace_name = f"unittest_rewrite_{os.getpid()}"
