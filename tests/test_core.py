@@ -37,6 +37,7 @@ from hypit_reference import (
     run_reference_workflow,
     select_best_browser_media,
 )
+from hypit_rewrite import RewriteOptions, run_originality_workflow
 from hypit_tutorial import ASSET_DIR, build_tutorial_html
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_pricing, format_usage
@@ -384,6 +385,71 @@ class CoreTests(unittest.TestCase):
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
 
+    def test_hypit_originality_project_generation(self):
+        workspace_name = f"unittest_rewrite_{os.getpid()}"
+        workspace = reference_workspace(workspace_name)
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                source_root = Path(temp)
+                image = generate_mock_image(
+                    "生成一张3:4竖版参考图。",
+                    "清新治愈",
+                    source_root / "source.png",
+                    width=360,
+                    height=640,
+                )
+                video = generate_mock_video(
+                    [image],
+                    source_root / "source.mp4",
+                    duration=1,
+                    width=360,
+                    height=640,
+                )
+                source = run_reference_workflow(
+                    title="原创口播测试",
+                    hook="先别急着划走",
+                    source_file=str(video),
+                    source_url="",
+                    language="zh",
+                    aspect_ratio="9:16",
+                    analysis_model="",
+                    api_key="",
+                    base_url="https://api.apib.ai/v1",
+                    mock_mode=True,
+                    workspace_name=workspace_name,
+                )
+                rewritten = run_originality_workflow(
+                    source,
+                    RewriteOptions(
+                        model="",
+                        originality_level="中度改写",
+                        remove_ai_flavor=True,
+                        remove_promotional=True,
+                        tts_model="tts-1",
+                        voice="alloy",
+                        language="zh",
+                    ),
+                    api_key="",
+                    base_url="https://api.apib.ai/v1",
+                    mock_mode=True,
+                )
+                self.assertTrue(rewritten.svml_path.exists())
+                self.assertTrue((rewritten.run_dir / "assets" / "voiceover.wav").exists())
+                self.assertTrue((rewritten.run_dir / "captions.srt").exists())
+                document = rewritten.svml_path.read_text(encoding="utf-8")
+                self.assertIn("@hypit/audio-track@1", document)
+                self.assertIn("<typo:Track id=\"subtitles\"", document)
+
+                relative_run = rewritten.svrun_path.relative_to(rewritten.workspace).as_posix()
+                plan = run_hypit(["plan", relative_run, "--json"], cwd=rewritten.workspace, timeout=300)
+                self.assertEqual(plan.returncode, 0, plan.stderr or plan.stdout)
+                payload = json.loads(plan.stdout)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["unresolvedRequestCount"], 0)
+                self.assertEqual(payload["providerRequestCount"], 0)
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
     def test_ui_smoke(self):
         window = MainWindow()
         window.show()
@@ -398,6 +464,10 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(window.hypit_page.mode_tabs.tabText(0), "简易模式")
         self.assertEqual(window.hypit_page.mode_tabs.tabText(1), "高级模式")
         self.assertEqual(window.hypit_page.simple_page.start_button.text(), "一键分析并生成工程")
+        self.assertEqual(
+            window.hypit_page.simple_page.rewrite_button.text(),
+            "生成原创口播版本",
+        )
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["image"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["video"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)

@@ -287,6 +287,45 @@ class APIMartClient:
                 return joined
         raise APIClientError(f"多模态分析返回空文本：{payload}")
 
+    def synthesize_speech(
+        self,
+        *,
+        text: str,
+        model: str = "tts-1",
+        voice: str = "alloy",
+        response_format: str = "wav",
+        speed: float = 1.0,
+    ) -> bytes:
+        if not text.strip():
+            raise APIClientError("配音文本为空。")
+        try:
+            response = self.session.post(
+                self._url("/audio/speech"),
+                headers=self._headers(json_body=True),
+                json={
+                    "model": model,
+                    "input": text.strip(),
+                    "voice": voice,
+                    "response_format": response_format,
+                    "speed": speed,
+                },
+                timeout=max(self.config.timeout, 600),
+            )
+        except requests.RequestException as exc:
+            raise APIClientError(f"语音生成请求失败：{exc}") from exc
+
+        if not response.ok:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {"raw": response.text[:1000]}
+            raise APIClientError(
+                self._error_message(payload, f"语音生成失败：HTTP {response.status_code}")
+            )
+        if not response.content:
+            raise APIClientError("语音接口返回了空文件。")
+        return response.content
+
     @staticmethod
     def _normalize_image_resolution(model: str, resolution: str) -> str:
         if model.lower().startswith(("gemini", "nano-banana")):

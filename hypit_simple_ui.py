@@ -17,6 +17,12 @@ from hypit_reference import (
     reference_workspace,
     run_reference_workflow,
 )
+from hypit_rewrite import (
+    TTS_MODELS,
+    TTS_VOICES,
+    RewriteOptions,
+    run_originality_workflow,
+)
 from hypit_service import start_hypit_process
 
 
@@ -118,12 +124,51 @@ class ReferenceBuildThread(QtCore.QThread):
             self.failed.emit(str(exc))
 
 
+class ReferenceRewriteThread(QtCore.QThread):
+    progress = QtCore.Signal(str)
+    completed = QtCore.Signal(dict)
+    failed = QtCore.Signal(str)
+
+    def __init__(
+        self,
+        project: ReferenceProject,
+        options: RewriteOptions,
+        *,
+        api_key: str,
+        base_url: str,
+        mock_mode: bool,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.project = project
+        self.options = options
+        self.api_key = api_key
+        self.base_url = base_url
+        self.mock_mode = mock_mode
+
+    def run(self) -> None:
+        try:
+            project = run_originality_workflow(
+                self.project,
+                self.options,
+                api_key=self.api_key,
+                base_url=self.base_url,
+                mock_mode=self.mock_mode,
+                progress=self.progress.emit,
+            )
+            self.completed.emit(project.as_dict())
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class HypitSimplePage(QtWidgets.QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main_window = main_window
         self.project: ReferenceProject | None = None
+        self.source_project: ReferenceProject | None = None
         self.workflow_thread: ReferenceWorkflowThread | None = None
+        self.rewrite_thread: ReferenceRewriteThread | None = None
         self.build_thread: ReferenceBuildThread | None = None
         self.studio_process = None
         self.setAcceptDrops(True)
@@ -176,7 +221,6 @@ class HypitSimplePage(QtWidgets.QWidget):
         self.aspect_combo.addItems(["9:16", "16:9", "1:1"])
         self.analysis_model_combo = QtWidgets.QComboBox()
         self.analysis_model_combo.setEditable(True)
-        self.set_models(self.main_window.model_catalog)
         options.addWidget(QtWidgets.QLabel("口播语言"), 0, 0)
         options.addWidget(QtWidgets.QLabel("输出比例"), 0, 1)
         options.addWidget(QtWidgets.QLabel("画面分析模型"), 0, 2)
@@ -246,6 +290,46 @@ class HypitSimplePage(QtWidgets.QWidget):
         actions.addWidget(self.open_output_button, 1, 1)
         result_layout.addLayout(actions)
 
+        result_layout.addWidget(_section("2. 原创口播与配音"))
+        rewrite_options = QtWidgets.QGridLayout()
+        self.originality_combo = QtWidgets.QComboBox()
+        self.originality_combo.addItems(["轻度改写", "中度改写", "深度改写"])
+        self.originality_combo.setCurrentText("中度改写")
+        self.remove_ai_check = QtWidgets.QCheckBox("去 AI 味")
+        self.remove_ai_check.setChecked(True)
+        self.remove_promo_check = QtWidgets.QCheckBox("去掉商业促销")
+        self.remove_promo_check.setChecked(True)
+        rewrite_options.addWidget(QtWidgets.QLabel("改写强度"), 0, 0)
+        rewrite_options.addWidget(self.originality_combo, 1, 0)
+        rewrite_options.addWidget(self.remove_ai_check, 1, 1)
+        rewrite_options.addWidget(self.remove_promo_check, 1, 2)
+        result_layout.addLayout(rewrite_options)
+
+        voice_options = QtWidgets.QGridLayout()
+        self.tts_model_combo = QtWidgets.QComboBox()
+        self.tts_model_combo.setEditable(True)
+        self.tts_model_combo.addItems(TTS_MODELS)
+        self.voice_combo = QtWidgets.QComboBox()
+        self.voice_combo.setEditable(True)
+        self.voice_combo.addItems(TTS_VOICES)
+        voice_options.addWidget(QtWidgets.QLabel("配音模型"), 0, 0)
+        voice_options.addWidget(QtWidgets.QLabel("配音音色"), 0, 1)
+        voice_options.addWidget(self.tts_model_combo, 1, 0)
+        voice_options.addWidget(self.voice_combo, 1, 1)
+        voice_options.setColumnStretch(0, 1)
+        voice_options.setColumnStretch(1, 1)
+        result_layout.addLayout(voice_options)
+        self.set_models(self.main_window.model_catalog)
+
+        self.rewrite_button = QtWidgets.QPushButton("生成原创口播版本")
+        self.rewrite_button.setObjectName("primaryButton")
+        self.rewrite_button.setMinimumHeight(44)
+        self.rewrite_button.setEnabled(False)
+        self.rewrite_button.clicked.connect(self.start_rewrite)
+        result_layout.addWidget(self.rewrite_button)
+        self.rewrite_status = _muted("先生成参考视频工程，然后可以重写口播。")
+        result_layout.addWidget(self.rewrite_status)
+
         result_layout.addWidget(_section("运行记录"))
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
@@ -279,6 +363,30 @@ class HypitSimplePage(QtWidgets.QWidget):
         selected = current if current in models else saved if saved in models else models[0]
         self.analysis_model_combo.setCurrentText(selected)
         self.analysis_model_combo.blockSignals(False)
+
+        current_tts = self.tts_model_combo.currentText().strip()
+        audio_models = [
+            str(item.get("id", "")).strip()
+            for item in catalog.get("audio", [])
+            if str(item.get("id", "")).strip()
+        ]
+        preferred_tts = [model for model in TTS_MODELS if model in audio_models]
+        dynamic_tts = [
+            model
+            for model in audio_models
+            if model not in preferred_tts
+            and any(token in model.lower() for token in ("tts", "speech", "voice", "fishaudio"))
+        ]
+        tts_models = preferred_tts + dynamic_tts + [
+            model for model in TTS_MODELS if model not in preferred_tts + dynamic_tts
+        ]
+        self.tts_model_combo.blockSignals(True)
+        self.tts_model_combo.clear()
+        self.tts_model_combo.addItems(tts_models)
+        self.tts_model_combo.setCurrentText(
+            current_tts if current_tts in tts_models else tts_models[0]
+        )
+        self.tts_model_combo.blockSignals(False)
 
     def choose_source_file(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -377,7 +485,7 @@ class HypitSimplePage(QtWidgets.QWidget):
         self._append_log(message)
 
     def _on_completed(self, payload: dict) -> None:
-        self.project = ReferenceProject(
+        self.source_project = ReferenceProject(
             workspace=Path(payload["workspace"]),
             run_dir=Path(payload["run_dir"]),
             media_path=Path(payload["media_path"]),
@@ -387,11 +495,13 @@ class HypitSimplePage(QtWidgets.QWidget):
             output_path=Path(payload["output_path"]),
             analysis=payload.get("analysis") or {},
         )
+        self.project = self.source_project
         self._set_busy(False, f"工程已生成：{self.project.run_dir.name}")
         self.summary.setHtml(self._analysis_html(self.project.analysis))
         self.open_workspace_button.setEnabled(True)
         self.open_studio_button.setEnabled(True)
         self.build_button.setEnabled(True)
+        self.rewrite_button.setEnabled(True)
         self.open_output_button.setEnabled(self.project.output_path.exists())
         self._append_log("可编辑工程已生成并通过 Hypit 校验。")
 
@@ -439,6 +549,43 @@ class HypitSimplePage(QtWidgets.QWidget):
         <ul>{lines(analysis.get("transitions") or [])}</ul>
         <h3>视觉元素</h3>
         <ul>{lines(analysis.get("visual_effects") or [])}</ul>
+        """
+
+    def _rewrite_html(self, rewrite: dict) -> str:
+        def lines(value) -> str:
+            if isinstance(value, list):
+                return "".join(f"<li>{escape(str(item))}</li>" for item in value)
+            return f"<li>{escape(str(value))}</li>"
+
+        segments = rewrite.get("segments") or []
+        rendered_segments = []
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            rendered_segments.append(
+                "<h3>"
+                + escape(str(segment.get("intent") or f"段落 {segment.get('id', '')}"))
+                + "</h3><p>"
+                + escape(str(segment.get("rewritten") or ""))
+                + "</p><p style='color:#93858D'>画面建议："
+                + escape(str(segment.get("visual_note") or "沿用参考画面"))
+                + "</p>"
+            )
+        return f"""
+        <style>
+          body {{ color:#3D343B; font-family:"Microsoft YaHei UI"; line-height:1.7; }}
+          h2 {{ color:#E14C7C; font-size:19px; }}
+          h3 {{ color:#4A414A; font-size:15px; margin-top:18px; }}
+          .box {{ background:#FFF4F8; border-left:4px solid #F45D8D; padding:10px 12px; }}
+        </style>
+        <h2>原创口播版本</h2>
+        <div class="box">{escape(str(rewrite.get("hook") or "暂无开头钩子"))}</div>
+        <p><b>完整配音</b></p>
+        <p>{escape(str(rewrite.get("full_script") or ""))}</p>
+        <h3>改写说明</h3>
+        <p>{escape(str(rewrite.get("note") or ""))}</p>
+        <h3>段落结构</h3>
+        {''.join(rendered_segments)}
         """
 
     def open_workspace(self) -> None:
@@ -490,6 +637,89 @@ class HypitSimplePage(QtWidgets.QWidget):
             lambda thread=self.build_thread: self._clear_build_thread(thread)
         )
         self.build_thread.start()
+
+    def start_rewrite(self) -> None:
+        if not self.source_project:
+            QtWidgets.QMessageBox.warning(self, "缺少参考工程", "请先生成参考视频工程。")
+            return
+        if self.rewrite_thread and self.rewrite_thread.isRunning():
+            return
+        values = self.main_window.settings_store.as_dict()
+        if values["api_key"] and not values["mock_mode"]:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "确认 API 费用",
+                "本次操作会调用文本模型重写口播、TTS 生成配音，并再次调用 Whisper "
+                "识别字幕时间点，可能产生 API 费用。\n\n是否继续？",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.Yes,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        options = RewriteOptions(
+            model=self.analysis_model_combo.currentText().strip(),
+            originality_level=self.originality_combo.currentText(),
+            remove_ai_flavor=self.remove_ai_check.isChecked(),
+            remove_promotional=self.remove_promo_check.isChecked(),
+            tts_model=self.tts_model_combo.currentText().strip() or "tts-1",
+            voice=self.voice_combo.currentText().strip() or "alloy",
+            language=LANGUAGE_OPTIONS.get(self.language_combo.currentText(), "zh"),
+        )
+        self.rewrite_button.setEnabled(False)
+        self.progress.setVisible(True)
+        self.rewrite_status.setText("正在生成原创口播...")
+        self.rewrite_thread = ReferenceRewriteThread(
+            self.source_project,
+            options,
+            api_key=values["api_key"],
+            base_url=values["base_url"],
+            mock_mode=bool(values["mock_mode"]),
+            parent=self,
+        )
+        self.rewrite_thread.progress.connect(self._on_rewrite_progress)
+        self.rewrite_thread.completed.connect(self._on_rewrite_completed)
+        self.rewrite_thread.failed.connect(self._on_rewrite_failed)
+        self.rewrite_thread.finished.connect(
+            lambda thread=self.rewrite_thread: self._clear_rewrite_thread(thread)
+        )
+        self.rewrite_thread.start()
+
+    def _clear_rewrite_thread(self, thread) -> None:
+        if self.rewrite_thread is thread:
+            self.rewrite_thread = None
+
+    def _on_rewrite_progress(self, message: str) -> None:
+        self.rewrite_status.setText(message)
+        self._append_log(message)
+
+    def _on_rewrite_completed(self, payload: dict) -> None:
+        self.project = ReferenceProject(
+            workspace=Path(payload["workspace"]),
+            run_dir=Path(payload["run_dir"]),
+            media_path=Path(payload["media_path"]),
+            analysis_path=Path(payload["analysis_path"]),
+            svml_path=Path(payload["svml_path"]),
+            svrun_path=Path(payload["svrun_path"]),
+            output_path=Path(payload["output_path"]),
+            analysis=payload.get("analysis") or {},
+        )
+        self.progress.setVisible(False)
+        self.rewrite_button.setEnabled(True)
+        self.rewrite_status.setText(f"原创口播工程已生成：{self.project.run_dir.name}")
+        self.summary.setHtml(self._rewrite_html(self.project.analysis))
+        self.open_workspace_button.setEnabled(True)
+        self.open_studio_button.setEnabled(True)
+        self.build_button.setEnabled(True)
+        self.open_output_button.setEnabled(False)
+        self._append_log("原创口播工程已生成并通过 Hypit 校验。点击“生成成片”导出新版本。")
+
+    def _on_rewrite_failed(self, message: str) -> None:
+        self.progress.setVisible(False)
+        self.rewrite_button.setEnabled(True)
+        self.rewrite_status.setText("原创口播生成失败。")
+        self._append_log(f"原创口播错误：{message}")
+        QtWidgets.QMessageBox.critical(self, "原创口播生成失败", message)
 
     def _clear_build_thread(self, thread) -> None:
         if self.build_thread is thread:
