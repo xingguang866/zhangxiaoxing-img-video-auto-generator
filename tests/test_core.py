@@ -12,6 +12,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtWidgets
+from playwright.sync_api import sync_playwright
 
 from api_client import APIClientError, APIConfig, APIMartClient
 from app import (
@@ -22,6 +23,7 @@ from app import (
     count_chinese_characters,
 )
 from batch_parser import BatchItem, create_batch_template, load_batch_items
+from browser_assistant import _fill_field, _upload_files
 from jianying_service import create_jianying_draft
 from hypit_service import (
     environment as hypit_environment,
@@ -50,7 +52,8 @@ from hypit_rewrite import (
 from hypit_tutorial import ASSET_DIR, build_tutorial_html
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_pricing, format_usage
-from publish_platforms import build_platform_posts
+from publish_platforms import PLATFORMS, build_platform_posts
+from publish_drafts import PublishDraft, new_publish_draft_id
 from prompts import STYLE_PROMPTS, build_cover_prompt, build_image_prompt
 
 
@@ -264,6 +267,97 @@ class CoreTests(unittest.TestCase):
                 platform_keys=["bilibili"],
             )
             self.assertFalse(image_posts[0].valid)
+
+    def test_publish_draft_navigation_and_queue(self):
+        window = MainWindow()
+        window.show()
+        self.app.processEvents()
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / "image.png"
+            image.write_bytes(b"image")
+            video = Path(temp) / "video.mp4"
+            video.write_bytes(b"video")
+            image_draft = PublishDraft(
+                draft_id=new_publish_draft_id(),
+                source_page="图文生成",
+                media_paths=[str(image)],
+                media_type="image",
+                title="图文发布草稿",
+                description="图文简介",
+                tags=["肛周护理"],
+            )
+            video_draft = PublishDraft(
+                draft_id=new_publish_draft_id(),
+                source_page="视频生成",
+                media_paths=[str(video)],
+                media_type="video",
+                title="视频发布草稿",
+                description="视频简介",
+                tags=["健康科普"],
+            )
+            window.open_publish_center([image_draft, video_draft])
+            self.app.processEvents()
+            self.assertEqual(window.stack.currentIndex(), 5)
+            self.assertEqual(window.publish_page.draft_combo.count(), 2)
+            self.assertEqual(window.publish_page.media_list.count(), 1)
+            self.assertEqual(window.publish_page.title_edit.text(), "视频发布草稿")
+            self.assertTrue(window.publish_page.platform_checks["xiaohongshu"].isChecked())
+            self.assertFalse(window.publish_page.platform_checks["douyin"].isChecked())
+            self.assertEqual(
+                window.publish_page.tabs.currentIndex(),
+                list(PLATFORMS).index("xiaohongshu"),
+            )
+        window.close()
+
+    def test_generation_pages_have_publish_entry_buttons(self):
+        window = MainWindow()
+        self.app.processEvents()
+        self.assertEqual(
+            window.image_page.send_publish_button.text(),
+            "发送到发布中心",
+        )
+        self.assertEqual(
+            window.video_page.send_publish_button.text(),
+            "发送到发布中心",
+        )
+        self.assertEqual(
+            window.batch_page.send_publish_button.text(),
+            "发送到发布中心",
+        )
+        window.close()
+
+    def test_xiaohongshu_form_helpers_fill_local_page(self):
+        fixture = self.root / "tests" / "fixtures" / "xhs_publish.html"
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / "note.png"
+            image.write_bytes(b"not-a-real-image")
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(
+                    channel="msedge",
+                    headless=True,
+                )
+                page = browser.new_page()
+                page.goto(fixture.as_uri(), wait_until="domcontentloaded")
+                uploaded = _upload_files(page, [image])
+                title_filled = _fill_field(
+                    page,
+                    ['input[placeholder*="标题"]'],
+                    "测试标题",
+                )
+                body_filled = _fill_field(
+                    page,
+                    ['textarea[placeholder*="正文"]'],
+                    "测试正文\n\n#肛周护理",
+                )
+                self.assertEqual(uploaded, 1)
+                self.assertTrue(title_filled)
+                self.assertTrue(body_filled)
+                self.assertEqual(page.locator("#title").input_value(), "测试标题")
+                self.assertEqual(
+                    page.locator("#body").input_value(),
+                    "测试正文\n\n#肛周护理",
+                )
+                browser.close()
 
     def test_mock_image_and_video_pipeline(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -643,6 +737,17 @@ class CoreTests(unittest.TestCase):
             "试听当前音色和情感",
         )
         self.assertTrue(window.hypit_page.simple_page.segment_emotion_check.isChecked())
+        window.publish_page._on_login_result(
+            "clear",
+            True,
+            "小红书独立浏览器配置已清除。",
+        )
+        self.assertIn(
+            "未登录",
+            window.publish_page.platform_widgets["xiaohongshu"][
+                "login_status"
+            ].text(),
+        )
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["image"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["video"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)

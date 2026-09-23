@@ -14,7 +14,14 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from api_client import APIClientError, APIConfig, APIMartClient
 from batch_parser import BatchItem, create_batch_template, load_batch_items
-from browser_assistant import assist_upload, open_platform_page
+from browser_assistant import (
+    assist_upload,
+    assist_upload_xiaohongshu,
+    clear_xiaohongshu_login,
+    open_platform_page,
+    xiaohongshu_login,
+    xiaohongshu_login_status,
+)
 from hypit_service import (
     HYPIT_PROJECTS,
     configure_local_profile,
@@ -51,6 +58,7 @@ from prompts import (
     normalize_style_name,
 )
 from publish_platforms import PLATFORMS, PlatformPost, build_platform_posts
+from publish_drafts import PublishDraft, new_publish_draft_id
 
 
 APP_TITLE = "张小星图文视频生成器"
@@ -1015,6 +1023,10 @@ class ImagePage(BaseGenerationPage):
         self.stop_button.setObjectName("secondaryButton")
         self.stop_button.clicked.connect(self.stop_worker)
         side_layout.addWidget(self.stop_button)
+        self.send_publish_button = QtWidgets.QPushButton("发送到发布中心")
+        self.send_publish_button.setObjectName("secondaryButton")
+        self.send_publish_button.clicked.connect(self.send_to_publish_center)
+        side_layout.addWidget(self.send_publish_button)
         side_layout.addStretch(1)
 
         self.gallery = MediaGallery("图片预览")
@@ -1148,6 +1160,31 @@ class ImagePage(BaseGenerationPage):
             f"完成，共生成 {summary.get('generated', 0)} 张图片（包含封面图）"
         )
 
+    def send_to_publish_center(self) -> None:
+        paths = [
+            str(item.get("path", "")).strip()
+            for item in self.gallery.items
+            if str(item.get("path", "")).strip()
+            and Path(str(item.get("path"))).exists()
+        ]
+        if not paths:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有图片",
+                "请先生成图片，再发送到发布中心。",
+            )
+            return
+        draft = PublishDraft(
+            draft_id=new_publish_draft_id(),
+            source_page="图文生成",
+            media_paths=paths,
+            media_type="image",
+            title=self.cover_title_edit.text().strip() or self.theme_edit.text().strip(),
+            description=self.copy_edit.toPlainText().strip(),
+            tags=[],
+        )
+        self.main_window.open_publish_center([draft])
+
 
 class VideoPage(BaseGenerationPage):
     def __init__(self, main_window, parent=None):
@@ -1250,6 +1287,10 @@ class VideoPage(BaseGenerationPage):
         self.stop_button.setObjectName("secondaryButton")
         self.stop_button.clicked.connect(self.stop_worker)
         side_layout.addWidget(self.stop_button)
+        self.send_publish_button = QtWidgets.QPushButton("发送到发布中心")
+        self.send_publish_button.setObjectName("secondaryButton")
+        self.send_publish_button.clicked.connect(self.send_to_publish_center)
+        side_layout.addWidget(self.send_publish_button)
         side_layout.addStretch(1)
 
         self.gallery = MediaGallery("视频预览")
@@ -1374,6 +1415,31 @@ class VideoPage(BaseGenerationPage):
             return
         self.status_label.setText(f"完成，共生成 {summary.get('generated', 0)} 条视频")
 
+    def send_to_publish_center(self) -> None:
+        paths = [
+            str(item.get("path", "")).strip()
+            for item in self.gallery.items
+            if str(item.get("path", "")).strip()
+            and Path(str(item.get("path"))).exists()
+        ]
+        if not paths:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有视频",
+                "请先生成视频，再发送到发布中心。",
+            )
+            return
+        draft = PublishDraft(
+            draft_id=new_publish_draft_id(),
+            source_page="视频生成",
+            media_paths=paths,
+            media_type="video",
+            title=self.video_theme.text().strip(),
+            description=self.prompt_edit.toPlainText().strip(),
+            tags=[],
+        )
+        self.main_window.open_publish_center([draft])
+
 
 class BatchPage(BaseGenerationPage):
     def __init__(self, main_window, parent=None):
@@ -1388,17 +1454,26 @@ class BatchPage(BaseGenerationPage):
         self.import_button = QtWidgets.QPushButton("导入 Excel / CSV")
         self.template_button = QtWidgets.QPushButton("下载导入模板")
         self.open_output_button = QtWidgets.QPushButton("打开输出目录")
+        self.send_publish_button = QtWidgets.QPushButton("发送到发布中心")
         self.clear_button = QtWidgets.QPushButton("清空列表")
-        for button in (self.import_button, self.template_button, self.open_output_button, self.clear_button):
+        for button in (
+            self.import_button,
+            self.template_button,
+            self.open_output_button,
+            self.send_publish_button,
+            self.clear_button,
+        ):
             button.setObjectName("secondaryButton")
         self.import_button.clicked.connect(self.import_file)
         self.template_button.clicked.connect(self.download_template)
         self.open_output_button.clicked.connect(self.open_output_dir)
+        self.send_publish_button.clicked.connect(self.send_to_publish_center)
         self.clear_button.clicked.connect(self.clear_items)
         toolbar.addWidget(self.import_button)
         toolbar.addWidget(self.template_button)
         toolbar.addStretch(1)
         toolbar.addWidget(self.open_output_button)
+        toolbar.addWidget(self.send_publish_button)
         toolbar.addWidget(self.clear_button)
         root.addWidget(toolbar_card)
 
@@ -1675,6 +1750,64 @@ class BatchPage(BaseGenerationPage):
                 "merge_mode": "merge" if self.video_mode_combo.currentIndex() == 1 else "each",
             },
         )
+
+    def send_to_publish_center(self) -> None:
+        if not self.items:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有数据",
+                "请先导入并生成批量素材。",
+            )
+            return
+        selected_rows = sorted(
+            {index.row() for index in self.table.selectedIndexes()}
+        )
+        source_items = (
+            [self.items[row] for row in selected_rows if row < len(self.items)]
+            if selected_rows
+            else self.items
+        )
+        drafts: list[PublishDraft] = []
+        for item in source_items:
+            tags = [
+                tag.strip().lstrip("#")
+                for tag in re.split(r"[\s,，、;；#]+", item.tags)
+                if tag.strip().lstrip("#")
+            ]
+            image_paths = [str(path) for path in item.image_paths if path.exists()]
+            video_paths = [str(path) for path in item.video_paths if path.exists()]
+            if image_paths:
+                drafts.append(
+                    PublishDraft(
+                        draft_id=new_publish_draft_id(),
+                        source_page="批量处理",
+                        media_paths=image_paths,
+                        media_type="image",
+                        title=item.theme,
+                        description=item.copy,
+                        tags=tags,
+                    )
+                )
+            if video_paths:
+                drafts.append(
+                    PublishDraft(
+                        draft_id=new_publish_draft_id(),
+                        source_page="批量处理",
+                        media_paths=video_paths,
+                        media_type="video",
+                        title=item.theme,
+                        description=item.copy or item.video_prompt,
+                        tags=tags,
+                    )
+                )
+        if not drafts:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有已生成素材",
+                "所选行还没有图片或视频，请先生成批量素材。",
+            )
+            return
+        self.main_window.open_publish_center(drafts)
 
     def on_finished(self, summary: dict) -> None:
         if "error" in summary:
@@ -2596,9 +2729,34 @@ class PublishAssistThread(QtCore.QThread):
 
     def run(self) -> None:
         try:
-            self.result.emit(assist_upload(**self.params))
+            if "media_type" in self.params and "tags" in self.params:
+                self.result.emit(assist_upload_xiaohongshu(**self.params))
+            else:
+                self.result.emit(assist_upload(**self.params))
         except Exception as exc:
             self.error.emit(str(exc))
+
+
+class XiaohongshuLoginThread(QtCore.QThread):
+    result = QtCore.Signal(bool, str)
+
+    def __init__(self, action: str, parent=None):
+        super().__init__(parent)
+        self.action = action
+
+    def run(self) -> None:
+        try:
+            if self.action == "login":
+                success, message = xiaohongshu_login()
+            elif self.action == "check":
+                success, message = xiaohongshu_login_status()
+            elif self.action == "clear":
+                success, message = True, clear_xiaohongshu_login()
+            else:
+                success, message = False, f"未知登录操作：{self.action}"
+            self.result.emit(success, message)
+        except Exception as exc:
+            self.result.emit(False, str(exc))
 
 
 class PublishPage(QtWidgets.QWidget):
@@ -2608,6 +2766,9 @@ class PublishPage(QtWidgets.QWidget):
         self.posts_by_key: dict[str, PlatformPost] = {}
         self.platform_widgets: dict[str, dict] = {}
         self.assist_thread: PublishAssistThread | None = None
+        self.login_thread: XiaohongshuLoginThread | None = None
+        self.drafts: list[PublishDraft] = []
+        self.current_draft_id = ""
 
         root = QtWidgets.QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2625,6 +2786,19 @@ class PublishPage(QtWidgets.QWidget):
                 "最终发布按钮必须由你在平台页面手动点击。"
             )
         )
+
+        side_layout.addWidget(section_label("发布草稿"))
+        draft_row = QtWidgets.QHBoxLayout()
+        self.draft_combo = QtWidgets.QComboBox()
+        self.draft_combo.currentIndexChanged.connect(self._on_draft_changed)
+        clear_drafts = QtWidgets.QPushButton("清空草稿")
+        clear_drafts.setObjectName("secondaryButton")
+        clear_drafts.clicked.connect(self.clear_drafts)
+        draft_row.addWidget(self.draft_combo, 1)
+        draft_row.addWidget(clear_drafts)
+        side_layout.addLayout(draft_row)
+        self.draft_status = hint_label("图文、视频和批量处理生成的素材会显示在这里。")
+        side_layout.addWidget(self.draft_status)
 
         self.title_edit = QtWidgets.QLineEdit()
         self.title_edit.setPlaceholderText("统一标题")
@@ -2664,7 +2838,7 @@ class PublishPage(QtWidgets.QWidget):
         self.platform_checks: dict[str, QtWidgets.QCheckBox] = {}
         for index, (key, profile) in enumerate(PLATFORMS.items()):
             checkbox = QtWidgets.QCheckBox(profile.name)
-            checkbox.setChecked(True)
+            checkbox.setChecked(key == "xiaohongshu")
             self.platform_checks[key] = checkbox
             platform_grid.addWidget(checkbox, index // 3, index % 3)
         side_layout.addLayout(platform_grid)
@@ -2686,11 +2860,31 @@ class PublishPage(QtWidgets.QWidget):
             layout.setSpacing(10)
             title = QtWidgets.QLineEdit()
             title.setPlaceholderText("平台标题")
+            title.setMaxLength(profile.title_limit)
             description = QtWidgets.QPlainTextEdit()
             description.setPlaceholderText("平台简介或正文")
             tags = QtWidgets.QLineEdit()
             tags.setPlaceholderText("平台标签")
             validation = hint_label("尚未生成适配文案。")
+            login_status = hint_label("小红书登录状态：未检测。")
+            login_buttons = QtWidgets.QHBoxLayout()
+            login_button = QtWidgets.QPushButton("扫码登录小红书")
+            check_login_button = QtWidgets.QPushButton("检测登录状态")
+            clear_login_button = QtWidgets.QPushButton("清除登录状态")
+            for button in (login_button, check_login_button, clear_login_button):
+                button.setObjectName("secondaryButton")
+            login_button.clicked.connect(
+                lambda checked=False: self.run_login_action("login")
+            )
+            check_login_button.clicked.connect(
+                lambda checked=False: self.run_login_action("check")
+            )
+            clear_login_button.clicked.connect(
+                lambda checked=False: self.run_login_action("clear")
+            )
+            login_buttons.addWidget(login_button)
+            login_buttons.addWidget(check_login_button)
+            login_buttons.addWidget(clear_login_button)
             buttons = QtWidgets.QHBoxLayout()
             copy_button = QtWidgets.QPushButton("复制全部文案")
             open_button = QtWidgets.QPushButton("打开官方发布页")
@@ -2703,6 +2897,11 @@ class PublishPage(QtWidgets.QWidget):
             buttons.addWidget(copy_button)
             buttons.addWidget(open_button)
             buttons.addWidget(upload_button)
+            if key == "xiaohongshu":
+                layout.addWidget(section_label("小红书登录"))
+                layout.addWidget(login_status)
+                layout.addLayout(login_buttons)
+                layout.addWidget(section_label("发布内容"))
             layout.addWidget(QtWidgets.QLabel("标题"))
             layout.addWidget(title)
             layout.addWidget(QtWidgets.QLabel("简介 / 正文"))
@@ -2718,10 +2917,153 @@ class PublishPage(QtWidgets.QWidget):
                 "tags": tags,
                 "validation": validation,
                 "upload_button": upload_button,
+                "login_status": login_status,
+                "login_buttons": (
+                    login_button,
+                    check_login_button,
+                    clear_login_button,
+                ),
             }
             self.tabs.addTab(page, profile.name)
+        self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
         root.addWidget(scrollable_side_card(side))
         root.addWidget(self.tabs, 1)
+
+    def add_drafts(self, drafts: list[PublishDraft]) -> None:
+        existing_ids = {draft.draft_id for draft in self.drafts}
+        for draft in drafts:
+            if draft.draft_id in existing_ids:
+                continue
+            self.drafts.append(draft)
+            existing_ids.add(draft.draft_id)
+        self._refresh_draft_combo(select_id=drafts[-1].draft_id if drafts else "")
+        self.draft_status.setText(
+            f"已加入 {len(drafts)} 个发布草稿，共 {len(self.drafts)} 个。"
+        )
+
+    def _refresh_draft_combo(self, *, select_id: str = "") -> None:
+        target = select_id or self.current_draft_id
+        self.draft_combo.blockSignals(True)
+        self.draft_combo.clear()
+        for draft in self.drafts:
+            self.draft_combo.addItem(draft.display_name, draft.draft_id)
+        index = self.draft_combo.findData(target)
+        if index < 0 and self.draft_combo.count():
+            index = 0
+        self.draft_combo.setCurrentIndex(index)
+        self.draft_combo.blockSignals(False)
+        if index >= 0:
+            self._select_draft(self.draft_combo.itemData(index))
+        else:
+            self.current_draft_id = ""
+
+    def _select_draft(self, draft_id: str | None) -> None:
+        if not draft_id:
+            return
+        draft = self._draft_by_id(str(draft_id))
+        if draft is None:
+            return
+        self.current_draft_id = draft.draft_id
+        self.title_edit.setText(draft.title)
+        self.description_edit.setPlainText(draft.description)
+        self.tags_edit.setText(" ".join(draft.tags))
+        self.media_list.clear()
+        for path in draft.media_paths:
+            self.media_list.addItem(path)
+        for key, checkbox in self.platform_checks.items():
+            checkbox.setChecked(key == "xiaohongshu")
+        self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
+        self.status_label.setText(
+            f"已载入{draft.source_page}草稿：{draft.title or '未命名'}"
+        )
+
+    def _on_draft_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        new_id = self.draft_combo.itemData(index)
+        if self.current_draft_id and self.current_draft_id != new_id:
+            self._capture_current_draft()
+        self._select_draft(str(new_id) if new_id else "")
+
+    def _capture_current_draft(self) -> None:
+        draft = self._draft_by_id(self.current_draft_id)
+        if draft is None:
+            return
+        draft.title = self.title_edit.text().strip()
+        draft.description = self.description_edit.toPlainText().strip()
+        draft.tags = [
+            tag.strip().lstrip("#")
+            for tag in re.split(r"[\s,，、;；#]+", self.tags_edit.text())
+            if tag.strip().lstrip("#")
+        ]
+        draft.media_paths = [
+            self.media_list.item(index).text()
+            for index in range(self.media_list.count())
+        ]
+
+    def _draft_by_id(self, draft_id: str) -> PublishDraft | None:
+        return next(
+            (draft for draft in self.drafts if draft.draft_id == draft_id),
+            None,
+        )
+
+    def clear_drafts(self) -> None:
+        self.drafts = []
+        self.current_draft_id = ""
+        self.draft_combo.clear()
+        self.media_list.clear()
+        self.title_edit.clear()
+        self.description_edit.clear()
+        self.tags_edit.clear()
+        self.draft_status.setText("发布草稿已清空。")
+
+    def run_login_action(self, action: str) -> None:
+        if thread_is_running(self.login_thread):
+            QtWidgets.QMessageBox.information(
+                self,
+                "登录操作进行中",
+                "请先完成当前登录或检测操作。",
+            )
+            return
+        labels = {
+            "login": "正在打开小红书扫码登录页...",
+            "check": "正在检测小红书登录状态...",
+            "clear": "正在清除小红书登录状态...",
+        }
+        login_status = self.platform_widgets["xiaohongshu"]["login_status"]
+        login_status.setText(labels.get(action, "处理中..."))
+        self.login_thread = XiaohongshuLoginThread(action, self)
+        self.login_thread.result.connect(
+            lambda success, message, action=action: self._on_login_result(
+                action,
+                success,
+                message,
+            )
+        )
+        self.login_thread.finished.connect(
+            lambda thread=self.login_thread: self._clear_login_thread(thread)
+        )
+        self.login_thread.start()
+
+    def _clear_login_thread(self, thread) -> None:
+        if self.login_thread is thread:
+            self.login_thread = None
+
+    def _on_login_result(
+        self,
+        action: str,
+        success: bool,
+        message: str,
+    ) -> None:
+        login_status = self.platform_widgets["xiaohongshu"]["login_status"]
+        if action == "clear" and success:
+            state = "未登录"
+        elif action == "clear":
+            state = "状态未知"
+        else:
+            state = "已登录" if success else "未登录"
+        login_status.setText(f"小红书登录状态：{state}。{message}")
+        self.status_label.setText(message)
 
     def add_media(self) -> None:
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
@@ -2768,6 +3110,7 @@ class PublishPage(QtWidgets.QWidget):
         return [key for key, checkbox in self.platform_checks.items() if checkbox.isChecked()]
 
     def generate_posts(self) -> None:
+        self._capture_current_draft()
         keys = self.selected_platforms()
         if not keys:
             QtWidgets.QMessageBox.warning(self, "未选择平台", "请至少选择一个发布平台。")
@@ -2823,6 +3166,7 @@ class PublishPage(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "打开发布页失败", str(exc))
 
     def assist_upload(self, key: str) -> None:
+        self._capture_current_draft()
         post = self.posts_by_key.get(key)
         if not post:
             QtWidgets.QMessageBox.warning(self, "没有文案", "请先生成平台适配文案。")
@@ -2835,13 +3179,24 @@ class PublishPage(QtWidgets.QWidget):
             return
 
         widgets = self.platform_widgets[key]
-        params = {
-            "platform_key": key,
-            "media_paths": [str(path) for path in self.selected_media()],
-            "title": widgets["title"].text().strip(),
-            "description": widgets["description"].toPlainText().strip(),
-            "keep_open": True,
-        }
+        if key == "xiaohongshu":
+            draft = self._draft_by_id(self.current_draft_id)
+            params = {
+                "media_paths": [str(path) for path in self.selected_media()],
+                "media_type": draft.media_type if draft else "image",
+                "title": widgets["title"].text().strip(),
+                "description": widgets["description"].toPlainText().strip(),
+                "tags": post.tags,
+                "keep_open": True,
+            }
+        else:
+            params = {
+                "platform_key": key,
+                "media_paths": [str(path) for path in self.selected_media()],
+                "title": widgets["title"].text().strip(),
+                "description": widgets["description"].toPlainText().strip(),
+                "keep_open": True,
+            }
         self.status_label.setText(f"正在打开{PLATFORMS[key].name}并尝试上传，最终发布请手动点击")
         self.assist_thread = PublishAssistThread(params, self)
         self.assist_thread.result.connect(self._on_assist_result)
@@ -3330,6 +3685,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_settings_saved(self) -> None:
         self.update_status()
         self.refresh_models(silent=True)
+
+    def open_publish_center(self, drafts: list[PublishDraft]) -> None:
+        self.publish_page.add_drafts(drafts)
+        self.stack.setCurrentIndex(5)
+        self.nav_buttons[5].setChecked(True)
 
     def set_model_catalog(self, catalog: dict[str, list[dict]], source: str) -> None:
         self.model_catalog = catalog
