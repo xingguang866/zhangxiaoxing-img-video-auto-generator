@@ -490,6 +490,8 @@ class CoreTests(unittest.TestCase):
                     source,
                     RewriteOptions(
                         model="",
+                        target_title="久坐党减少肛周摩擦的正确方法",
+                        target_hook="别再反复干擦，这个习惯可能让问题更明显",
                         originality_level="中度改写",
                         remove_ai_flavor=True,
                         remove_promotional=True,
@@ -504,9 +506,18 @@ class CoreTests(unittest.TestCase):
                 self.assertTrue(rewritten.svml_path.exists())
                 self.assertTrue((rewritten.run_dir / "assets" / "voiceover.wav").exists())
                 self.assertTrue((rewritten.run_dir / "captions.srt").exists())
+                self.assertEqual(
+                    rewritten.analysis["title"],
+                    "久坐党减少肛周摩擦的正确方法",
+                )
+                self.assertEqual(
+                    rewritten.analysis["hook"],
+                    "别再反复干擦，这个习惯可能让问题更明显",
+                )
                 document = rewritten.svml_path.read_text(encoding="utf-8")
                 self.assertIn("@hypit/audio-track@1", document)
                 self.assertIn("<typo:Track id=\"subtitles\"", document)
+                self.assertIn("别再反复干擦", document)
 
                 relative_run = rewritten.svrun_path.relative_to(rewritten.workspace).as_posix()
                 plan = run_hypit(["plan", relative_run, "--json"], cwd=rewritten.workspace, timeout=300)
@@ -534,8 +545,14 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(window.hypit_page.simple_page.start_button.text(), "一键分析并生成工程")
         self.assertEqual(
             window.hypit_page.simple_page.rewrite_button.text(),
-            "生成原创口播版本",
+            "按创作目标生成原创口播",
         )
+        self.assertEqual(
+            window.hypit_page.simple_page.build_button.text(),
+            "生成原创成片",
+        )
+        self.assertTrue(window.hypit_page.simple_page.target_title_edit.placeholderText())
+        self.assertTrue(window.hypit_page.simple_page.target_hook_edit.placeholderText())
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["image"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["video"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)

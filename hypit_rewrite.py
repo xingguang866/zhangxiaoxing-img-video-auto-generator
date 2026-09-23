@@ -33,6 +33,8 @@ TTS_VOICES = ["alloy", "coral", "nova", "shimmer", "echo", "fable", "onyx", "ver
 @dataclass(slots=True)
 class RewriteOptions:
     model: str
+    target_title: str = ""
+    target_hook: str = ""
     originality_level: str = "中度改写"
     remove_ai_flavor: bool = True
     remove_promotional: bool = True
@@ -84,8 +86,12 @@ def _fallback_rewrite(project: ReferenceProject, options: RewriteOptions) -> dic
     )
     return {
         "analysis_mode": "rewrite_fallback",
-        "title": project.analysis.get("summary") or "原创口播视频",
-        "hook": (project.analysis.get("hook") or {}).get("proposed_text") or "先用一句话说清观众能得到什么",
+        "title": options.target_title.strip()
+        or project.analysis.get("summary")
+        or "原创口播视频",
+        "hook": options.target_hook.strip()
+        or (project.analysis.get("hook") or {}).get("proposed_text")
+        or "先用一句话说清观众能得到什么",
         "full_script": source,
         "segments": [
             {
@@ -132,6 +138,8 @@ def rewrite_script(
 4. 口播要像真人说话，适合直接交给 TTS，不使用括号动作说明。
 5. 按原视频的段落结构重写，但允许合并或调整顺序。
 
+真正创作目标：{options.target_title.strip() or "未填写"}
+指定开头钩子：{options.target_hook.strip() or "未填写"}
 改写强度：{options.originality_level}
 去 AI 味：{"开启" if options.remove_ai_flavor else "关闭"}
 去掉商业促销：{"开启" if options.remove_promotional else "关闭"}
@@ -170,6 +178,10 @@ def rewrite_script(
         result = _extract_json_object(raw)
         result.setdefault("title", project.analysis.get("summary") or "原创口播视频")
         result.setdefault("hook", "")
+        if options.target_title.strip():
+            result["title"] = options.target_title.strip()
+        if options.target_hook.strip():
+            result["hook"] = options.target_hook.strip()
         result.setdefault("segments", [])
         full_script = str(result.get("full_script") or "").strip()
         if not full_script:

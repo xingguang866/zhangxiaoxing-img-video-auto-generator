@@ -173,46 +173,67 @@ class HypitSimplePage(QtWidgets.QWidget):
         self.studio_process = None
         self.setAcceptDrops(True)
 
-        root = QtWidgets.QHBoxLayout(self)
+        root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 12, 0, 0)
-        root.setSpacing(14)
+        root.setSpacing(0)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        container = QtWidgets.QWidget()
+        sequence = QtWidgets.QVBoxLayout(container)
+        sequence.setContentsMargins(0, 0, 8, 0)
+        sequence.setSpacing(14)
 
-        controls = QtWidgets.QFrame()
-        controls.setObjectName("sideCard")
-        controls.setMinimumWidth(520)
-        form = QtWidgets.QVBoxLayout(controls)
-        form.setContentsMargins(20, 20, 20, 20)
-        form.setSpacing(12)
-        form.addWidget(_section("一键参考视频工程"))
-        form.addWidget(
+        step_one_card = QtWidgets.QFrame()
+        step_one_card.setObjectName("sideCard")
+        step_one = QtWidgets.QVBoxLayout(step_one_card)
+        step_one.setContentsMargins(22, 20, 22, 20)
+        step_one.setSpacing(11)
+        step_one.addWidget(_section("第 1 步：选择参考视频并生成工程"))
+        step_one.addWidget(
             _muted(
-                "上传参考视频后，软件自动完成视频下载、口播识别、画面取样、结构分析，"
-                "并生成可继续编辑和重复运行的 Hypit 工程。"
+                "先获取参考视频的结构、口播和关键画面。此步骤只创建参考工程，"
+                "不会根据创作目标改写口播。"
             )
         )
-
-        step_one = _section("1. 选择参考视频")
-        form.addWidget(step_one)
         self.source_url_edit = QtWidgets.QLineEdit()
         self.source_url_edit.setPlaceholderText("粘贴小红书、抖音、快手、视频号或 B站分享链接")
-        form.addWidget(self.source_url_edit)
+        step_one.addWidget(self.source_url_edit)
         source_row = QtWidgets.QHBoxLayout()
         self.source_file_edit = QtWidgets.QLineEdit()
-        self.source_file_edit.setPlaceholderText("也可以选择本地 MP4、MOV、MKV 或 WEBM")
+        self.source_file_edit.setPlaceholderText("或者选择本地 MP4、MOV、MKV、WEBM")
         choose_file = QtWidgets.QPushButton("选择视频")
         choose_file.setObjectName("secondaryButton")
         choose_file.clicked.connect(self.choose_source_file)
         source_row.addWidget(self.source_file_edit, 1)
         source_row.addWidget(choose_file)
-        form.addLayout(source_row)
+        step_one.addLayout(source_row)
+        self.start_button = QtWidgets.QPushButton("一键分析并生成工程")
+        self.start_button.setObjectName("primaryButton")
+        self.start_button.setMinimumHeight(48)
+        self.start_button.clicked.connect(self.start_workflow)
+        step_one.addWidget(self.start_button)
+        self.status_label = _muted("等待选择参考视频。")
+        step_one.addWidget(self.status_label)
+        sequence.addWidget(step_one_card)
 
-        form.addWidget(_section("2. 填写创作目标"))
-        self.title_edit = QtWidgets.QLineEdit()
-        self.title_edit.setPlaceholderText("视频主题，例如：久坐党如何减少肛周摩擦")
-        self.hook_edit = QtWidgets.QLineEdit()
-        self.hook_edit.setPlaceholderText("开头钩子，例如：这 3 个习惯正在让肛门反复不舒服")
-        form.addWidget(self.title_edit)
-        form.addWidget(self.hook_edit)
+        step_two_card = QtWidgets.QFrame()
+        step_two_card.setObjectName("sideCard")
+        step_two = QtWidgets.QVBoxLayout(step_two_card)
+        step_two.setContentsMargins(22, 20, 22, 20)
+        step_two.setSpacing(11)
+        step_two.addWidget(_section("第 2 步：填写真正的创作目标并生成原创口播"))
+        step_two.addWidget(
+            _muted(
+                "这里的标题和钩子会真正交给脚本改写模型，并用于新配音和新字幕。"
+            )
+        )
+        self.target_title_edit = QtWidgets.QLineEdit()
+        self.target_title_edit.setPlaceholderText("真正创作目标，例如：久坐党如何减少肛周摩擦")
+        self.target_hook_edit = QtWidgets.QLineEdit()
+        self.target_hook_edit.setPlaceholderText("真正开头钩子，例如：别再用干纸反复擦，问题可能就在这里")
+        step_two.addWidget(self.target_title_edit)
+        step_two.addWidget(self.target_hook_edit)
 
         options = QtWidgets.QGridLayout()
         self.language_combo = QtWidgets.QComboBox()
@@ -223,74 +244,13 @@ class HypitSimplePage(QtWidgets.QWidget):
         self.analysis_model_combo.setEditable(True)
         options.addWidget(QtWidgets.QLabel("口播语言"), 0, 0)
         options.addWidget(QtWidgets.QLabel("输出比例"), 0, 1)
-        options.addWidget(QtWidgets.QLabel("画面分析模型"), 0, 2)
+        options.addWidget(QtWidgets.QLabel("脚本改写模型"), 0, 2)
         options.addWidget(self.language_combo, 1, 0)
         options.addWidget(self.aspect_combo, 1, 1)
         options.addWidget(self.analysis_model_combo, 1, 2)
         options.setColumnStretch(2, 1)
-        form.addLayout(options)
+        step_two.addLayout(options)
 
-        mode = self.main_window.settings_store.as_dict()
-        if mode["mock_mode"]:
-            mode_hint = "当前是演示模式：会生成真实可编辑工程，但画面分析使用基础规则。"
-        elif mode["api_key"]:
-            mode_hint = "APIB 已配置：将调用多模态模型分析关键画面，并调用 Whisper-1 识别口播。"
-        else:
-            mode_hint = "未配置 APIB API Key：仍可生成工程，画面分析使用基础规则。"
-        form.addWidget(_muted(mode_hint))
-
-        self.start_button = QtWidgets.QPushButton("一键分析并生成工程")
-        self.start_button.setObjectName("primaryButton")
-        self.start_button.setMinimumHeight(48)
-        self.start_button.clicked.connect(self.start_workflow)
-        form.addWidget(self.start_button)
-
-        self.progress = QtWidgets.QProgressBar()
-        self.progress.setRange(0, 0)
-        self.progress.setVisible(False)
-        form.addWidget(self.progress)
-        self.status_label = _muted("等待选择参考视频。")
-        form.addWidget(self.status_label)
-        form.addStretch(1)
-
-        result_card = QtWidgets.QFrame()
-        result_card.setObjectName("previewCard")
-        result_layout = QtWidgets.QVBoxLayout(result_card)
-        result_layout.setContentsMargins(20, 20, 20, 20)
-        result_layout.setSpacing(10)
-        result_layout.addWidget(_section("分析结果与工程"))
-        self.summary = QtWidgets.QTextBrowser()
-        self.summary.setOpenExternalLinks(False)
-        self.summary.setHtml(
-            "<p style='color:#93858D'>完成分析后，这里会显示参考视频的结构摘要、"
-            "口播情况、节奏、B-roll 和转场建议。</p>"
-        )
-        result_layout.addWidget(self.summary, 1)
-
-        actions = QtWidgets.QGridLayout()
-        self.open_workspace_button = QtWidgets.QPushButton("打开工程目录")
-        self.open_studio_button = QtWidgets.QPushButton("打开 Studio")
-        self.build_button = QtWidgets.QPushButton("生成成片")
-        self.open_output_button = QtWidgets.QPushButton("播放成片")
-        for button in (
-            self.open_workspace_button,
-            self.open_studio_button,
-            self.build_button,
-            self.open_output_button,
-        ):
-            button.setObjectName("secondaryButton")
-            button.setEnabled(False)
-        self.open_workspace_button.clicked.connect(self.open_workspace)
-        self.open_studio_button.clicked.connect(self.open_studio)
-        self.build_button.clicked.connect(self.build_video)
-        self.open_output_button.clicked.connect(self.open_output)
-        actions.addWidget(self.open_workspace_button, 0, 0)
-        actions.addWidget(self.open_studio_button, 0, 1)
-        actions.addWidget(self.build_button, 1, 0)
-        actions.addWidget(self.open_output_button, 1, 1)
-        result_layout.addLayout(actions)
-
-        result_layout.addWidget(_section("2. 原创口播与配音"))
         rewrite_options = QtWidgets.QGridLayout()
         self.originality_combo = QtWidgets.QComboBox()
         self.originality_combo.addItems(["轻度改写", "中度改写", "深度改写"])
@@ -303,7 +263,7 @@ class HypitSimplePage(QtWidgets.QWidget):
         rewrite_options.addWidget(self.originality_combo, 1, 0)
         rewrite_options.addWidget(self.remove_ai_check, 1, 1)
         rewrite_options.addWidget(self.remove_promo_check, 1, 2)
-        result_layout.addLayout(rewrite_options)
+        step_two.addLayout(rewrite_options)
 
         voice_options = QtWidgets.QGridLayout()
         self.tts_model_combo = QtWidgets.QComboBox()
@@ -312,32 +272,83 @@ class HypitSimplePage(QtWidgets.QWidget):
         self.voice_combo = QtWidgets.QComboBox()
         self.voice_combo.setEditable(True)
         self.voice_combo.addItems(TTS_VOICES)
-        voice_options.addWidget(QtWidgets.QLabel("配音模型"), 0, 0)
+        voice_options.addWidget(QtWidgets.QLabel("配音模型（默认 gpt-4o-mini-tts）"), 0, 0)
         voice_options.addWidget(QtWidgets.QLabel("配音音色"), 0, 1)
         voice_options.addWidget(self.tts_model_combo, 1, 0)
         voice_options.addWidget(self.voice_combo, 1, 1)
         voice_options.setColumnStretch(0, 1)
         voice_options.setColumnStretch(1, 1)
-        result_layout.addLayout(voice_options)
+        step_two.addLayout(voice_options)
         self.set_models(self.main_window.model_catalog)
 
-        self.rewrite_button = QtWidgets.QPushButton("生成原创口播版本")
+        self.rewrite_button = QtWidgets.QPushButton("按创作目标生成原创口播")
         self.rewrite_button.setObjectName("primaryButton")
         self.rewrite_button.setMinimumHeight(44)
         self.rewrite_button.setEnabled(False)
         self.rewrite_button.clicked.connect(self.start_rewrite)
-        result_layout.addWidget(self.rewrite_button)
-        self.rewrite_status = _muted("先生成参考视频工程，然后可以重写口播。")
-        result_layout.addWidget(self.rewrite_status)
+        step_two.addWidget(self.rewrite_button)
+        self.rewrite_status = _muted("请先完成第 1 步。")
+        step_two.addWidget(self.rewrite_status)
+        sequence.addWidget(step_two_card)
 
-        result_layout.addWidget(_section("运行记录"))
+        step_three_card = QtWidgets.QFrame()
+        step_three_card.setObjectName("previewCard")
+        step_three = QtWidgets.QVBoxLayout(step_three_card)
+        step_three.setContentsMargins(22, 20, 22, 20)
+        step_three.setSpacing(10)
+        step_three.addWidget(_section("第 3 步：确认原创工程并生成成片"))
+        self.summary = QtWidgets.QTextBrowser()
+        self.summary.setOpenExternalLinks(False)
+        self.summary.setMinimumHeight(250)
+        self.summary.setHtml(
+            "<p style='color:#93858D'>完成第 1 步后显示参考分析；"
+            "完成第 2 步后显示新口播、段落结构和画面建议。</p>"
+        )
+        step_three.addWidget(self.summary)
+
+        actions = QtWidgets.QGridLayout()
+        self.build_button = QtWidgets.QPushButton("生成原创成片")
+        self.open_output_button = QtWidgets.QPushButton("播放成片")
+        self.open_workspace_button = QtWidgets.QPushButton("打开工程目录")
+        self.open_studio_button = QtWidgets.QPushButton("打开 Studio")
+        for button in (
+            self.build_button,
+            self.open_output_button,
+            self.open_workspace_button,
+            self.open_studio_button,
+        ):
+            button.setObjectName("secondaryButton")
+            button.setEnabled(False)
+        self.build_button.setObjectName("primaryButton")
+        self.open_workspace_button.clicked.connect(self.open_workspace)
+        self.open_studio_button.clicked.connect(self.open_studio)
+        self.build_button.clicked.connect(self.build_video)
+        self.open_output_button.clicked.connect(self.open_output)
+        actions.addWidget(self.build_button, 0, 0, 1, 2)
+        actions.addWidget(self.open_workspace_button, 1, 0)
+        actions.addWidget(self.open_studio_button, 1, 1)
+        actions.addWidget(self.open_output_button, 2, 0, 1, 2)
+        step_three.addLayout(actions)
+        sequence.addWidget(step_three_card)
+
+        log_card = QtWidgets.QFrame()
+        log_card.setObjectName("sideCard")
+        log_layout = QtWidgets.QVBoxLayout(log_card)
+        log_layout.setContentsMargins(22, 18, 22, 18)
+        log_layout.addWidget(_section("运行记录"))
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
-        self.log_edit.setMaximumHeight(150)
-        result_layout.addWidget(self.log_edit)
+        self.log_edit.setMaximumHeight(160)
+        log_layout.addWidget(self.log_edit)
+        sequence.addWidget(log_card)
 
-        root.addWidget(controls)
-        root.addWidget(result_card, 1)
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(False)
+        sequence.addWidget(self.progress)
+        sequence.addStretch(1)
+        scroll.setWidget(container)
+        root.addWidget(scroll)
 
     def set_models(self, catalog: dict[str, list[dict]]) -> None:
         current = self.analysis_model_combo.currentText().strip()
@@ -455,9 +466,12 @@ class HypitSimplePage(QtWidgets.QWidget):
         self.log_edit.clear()
         self._append_log("开始准备参考视频工程。")
         self._set_busy(True, "准备中...")
+        reference_title = (
+            Path(source_file).stem if source_file else "参考视频工程"
+        )[:60] or "参考视频工程"
         self.workflow_thread = ReferenceWorkflowThread(
-            title=self.title_edit.text().strip(),
-            hook=self.hook_edit.text().strip(),
+            title=reference_title,
+            hook=reference_title,
             source_file=source_file,
             source_url=source_url,
             language=LANGUAGE_OPTIONS.get(self.language_combo.currentText(), "zh"),
@@ -671,6 +685,22 @@ class HypitSimplePage(QtWidgets.QWidget):
             return
         if self.rewrite_thread and self.rewrite_thread.isRunning():
             return
+        target_title = self.target_title_edit.text().strip()
+        target_hook = self.target_hook_edit.text().strip()
+        if not target_title:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "缺少创作目标",
+                "请在第 2 步填写真正的创作目标。",
+            )
+            return
+        if not target_hook:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "缺少开头钩子",
+                "请在第 2 步填写真正的开头钩子。",
+            )
+            return
         values = self.main_window.settings_store.as_dict()
         if values["api_key"] and not values["mock_mode"]:
             answer = QtWidgets.QMessageBox.question(
@@ -686,6 +716,8 @@ class HypitSimplePage(QtWidgets.QWidget):
                 return
         options = RewriteOptions(
             model=self.analysis_model_combo.currentText().strip(),
+            target_title=target_title,
+            target_hook=target_hook,
             originality_level=self.originality_combo.currentText(),
             remove_ai_flavor=self.remove_ai_check.isChecked(),
             remove_promotional=self.remove_promo_check.isChecked(),
