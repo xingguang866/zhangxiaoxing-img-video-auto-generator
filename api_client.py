@@ -287,6 +287,57 @@ class APIMartClient:
                 return joined
         raise APIClientError(f"多模态分析返回空文本：{payload}")
 
+    def chat_completion(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        system_prompt: str = "",
+        max_tokens: int = 4000,
+        temperature: float = 0.7,
+    ) -> str:
+        messages: list[dict[str, str]] = []
+        if system_prompt.strip():
+            messages.append({"role": "system", "content": system_prompt.strip()})
+        messages.append({"role": "user", "content": prompt.strip()})
+        response = self._request(
+            "POST",
+            "/chat/completions",
+            json_body={
+                "model": model,
+                "stream": False,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=max(self.config.timeout, 600),
+            max_retries=1,
+        )
+        payload = response.get("data", response)
+        if not isinstance(payload, dict):
+            raise APIClientError(f"文本模型返回格式异常：{response}")
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise APIClientError(f"文本模型未返回结果：{payload}")
+        first = choices[0]
+        if not isinstance(first, dict):
+            raise APIClientError(f"文本模型结果格式异常：{payload}")
+        message = first.get("message")
+        if not isinstance(message, dict):
+            raise APIClientError(f"文本模型结果缺少 message：{payload}")
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            joined = "\n".join(
+                str(item.get("text", ""))
+                for item in content
+                if isinstance(item, dict) and item.get("text")
+            ).strip()
+            if joined:
+                return joined
+        raise APIClientError(f"文本模型返回空内容：{payload}")
+
     def synthesize_speech(
         self,
         *,

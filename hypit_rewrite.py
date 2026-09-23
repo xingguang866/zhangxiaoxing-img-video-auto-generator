@@ -161,10 +161,9 @@ def rewrite_script(
 """.strip()
     try:
         client = APIMartClient(APIConfig(base_url=base_url, api_key=api_key))
-        raw = client.multimodal_response(
+        raw = client.chat_completion(
             model=options.model,
             prompt=prompt,
-            image_data_uris=[],
             max_tokens=6000,
             temperature=0.7,
         )

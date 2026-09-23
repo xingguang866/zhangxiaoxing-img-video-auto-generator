@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtWidgets
 
-from api_client import APIClientError, APIMartClient
+from api_client import APIClientError, APIConfig, APIMartClient
 from app import (
     FALLBACK_MODEL_CATALOG,
     MainWindow,
@@ -117,6 +117,45 @@ class CoreTests(unittest.TestCase):
                 duration=8,
                 resolution="4k",
             )
+
+    def test_chat_completion_response_formats(self):
+        client = APIMartClient(
+            APIConfig(base_url="https://api.apib.ai/v1", api_key="test-key")
+        )
+        captured = {}
+
+        def wrapped_request(method, path, **kwargs):
+            captured.update({"method": method, "path": path, "kwargs": kwargs})
+            return {
+                "code": 200,
+                "data": {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "原创口播测试",
+                            }
+                        }
+                    ]
+                },
+            }
+
+        client._request = wrapped_request
+        result = client.chat_completion(model="gpt-5", prompt="重写口播")
+        self.assertEqual(result, "原创口播测试")
+        self.assertEqual(captured["path"], "/chat/completions")
+        self.assertEqual(
+            captured["kwargs"]["json_body"]["messages"][-1]["content"],
+            "重写口播",
+        )
+
+        client._request = lambda method, path, **kwargs: {
+            "choices": [{"message": {"content": "direct-ok"}}]
+        }
+        self.assertEqual(
+            client.chat_completion(model="gpt-5", prompt="test"),
+            "direct-ok",
+        )
 
     def test_pricing_formatting(self):
         token_pricing = {
