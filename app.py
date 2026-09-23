@@ -14,6 +14,10 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from api_client import APIClientError, APIConfig, APIMartClient
 from batch_parser import BatchItem, create_batch_template, load_batch_items
+from batch_publish_ui import (
+    BatchPublishQueueDialog,
+    BatchPublishQueueThread,
+)
 from browser_assistant import (
     assist_upload,
     assist_upload_xiaohongshu,
@@ -1458,12 +1462,16 @@ class BatchPage(BaseGenerationPage):
         self.template_button = QtWidgets.QPushButton("下载导入模板")
         self.open_output_button = QtWidgets.QPushButton("打开输出目录")
         self.send_publish_button = QtWidgets.QPushButton("发送到发布中心")
+        self.batch_publish_button = QtWidgets.QPushButton("批量排队发布小红书")
+        self.stop_publish_queue_button = QtWidgets.QPushButton("停止发布队列")
         self.clear_button = QtWidgets.QPushButton("清空列表")
         for button in (
             self.import_button,
             self.template_button,
             self.open_output_button,
             self.send_publish_button,
+            self.batch_publish_button,
+            self.stop_publish_queue_button,
             self.clear_button,
         ):
             button.setObjectName("secondaryButton")
@@ -1471,12 +1479,17 @@ class BatchPage(BaseGenerationPage):
         self.template_button.clicked.connect(self.download_template)
         self.open_output_button.clicked.connect(self.open_output_dir)
         self.send_publish_button.clicked.connect(self.send_to_publish_center)
+        self.batch_publish_button.clicked.connect(self.open_batch_publish_queue)
+        self.stop_publish_queue_button.clicked.connect(self.stop_publish_queue)
+        self.stop_publish_queue_button.setEnabled(False)
         self.clear_button.clicked.connect(self.clear_items)
         toolbar.addWidget(self.import_button)
         toolbar.addWidget(self.template_button)
         toolbar.addStretch(1)
         toolbar.addWidget(self.open_output_button)
         toolbar.addWidget(self.send_publish_button)
+        toolbar.addWidget(self.batch_publish_button)
+        toolbar.addWidget(self.stop_publish_queue_button)
         toolbar.addWidget(self.clear_button)
         root.addWidget(toolbar_card)
 
@@ -1555,6 +1568,7 @@ class BatchPage(BaseGenerationPage):
         root.addLayout(content, 1)
 
         self.items: list[BatchItem] = []
+        self.publish_queue_thread: BatchPublishQueueThread | None = None
 
     def set_models(self, image_models: list[str], video_models: list[str]) -> None:
         current_image = self.image_model_combo.currentText().strip()
@@ -1754,24 +1768,21 @@ class BatchPage(BaseGenerationPage):
             },
         )
 
-    def send_to_publish_center(self) -> None:
-        if not self.items:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "没有数据",
-                "请先导入并生成批量素材。",
-            )
-            return
+    def _selected_batch_items(self) -> list[BatchItem]:
         selected_rows = sorted(
             {index.row() for index in self.table.selectedIndexes()}
         )
-        source_items = (
+        return (
             [self.items[row] for row in selected_rows if row < len(self.items)]
             if selected_rows
             else self.items
         )
+
+    def build_publish_drafts(self) -> list[PublishDraft]:
+        if not self.items:
+            return []
         drafts: list[PublishDraft] = []
-        for item in source_items:
+        for item in self._selected_batch_items():
             tags = [
                 tag.strip().lstrip("#")
                 for tag in re.split(r"[\s,，、;；#]+", item.tags)
@@ -1803,14 +1814,101 @@ class BatchPage(BaseGenerationPage):
                         tags=tags,
                     )
                 )
+        return drafts
+
+    def send_to_publish_center(self) -> None:
+        drafts = self.build_publish_drafts()
         if not drafts:
             QtWidgets.QMessageBox.warning(
                 self,
                 "没有已生成素材",
-                "所选行还没有图片或视频，请先生成批量素材。",
+                "请先导入、生成批量素材，或选择包含素材的行。",
             )
             return
         self.main_window.open_publish_center(drafts)
+
+    def open_batch_publish_queue(self) -> None:
+        if thread_is_running(self.publish_queue_thread):
+            QtWidgets.QMessageBox.information(
+                self,
+                "队列运行中",
+                "批量发布队列正在运行。",
+            )
+            return
+        drafts = self.build_publish_drafts()
+        if not drafts:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有已生成素材",
+                "请先生成批量图片或视频。",
+            )
+            return
+        dialog = BatchPublishQueueDialog(drafts, self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        if dialog.auto_publish_check.isChecked():
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "确认批量自动发布",
+                "队列会逐条自动点击小红书最终发布，并按随机间隔执行。"
+                "批量操作存在平台风控和误发风险。\n\n是否继续？",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        self.publish_queue_thread = BatchPublishQueueThread(
+            dialog.entries,
+            browser_name=str(dialog.browser_combo.currentData() or "edge"),
+            auto_publish=dialog.auto_publish_check.isChecked(),
+            prep_lead_minutes=dialog.prep_lead_spin.value(),
+            parent=self,
+        )
+        self.publish_queue_thread.progress.connect(self._on_publish_queue_progress)
+        self.publish_queue_thread.completed.connect(
+            self._on_publish_queue_completed
+        )
+        self.publish_queue_thread.failed.connect(self._on_publish_queue_failed)
+        self.publish_queue_thread.finished.connect(
+            lambda thread=self.publish_queue_thread: self._clear_publish_queue_thread(
+                thread
+            )
+        )
+        self.batch_publish_button.setEnabled(False)
+        self.stop_publish_queue_button.setEnabled(True)
+        self.append_log(
+            f"批量发布队列已启动，共 {len(dialog.entries)} 条任务。"
+        )
+        self.publish_queue_thread.start()
+
+    def stop_publish_queue(self) -> None:
+        if self.publish_queue_thread and self.publish_queue_thread.isRunning():
+            self.publish_queue_thread.stop()
+            self.append_log("已请求停止批量发布队列。")
+            self.stop_publish_queue_button.setEnabled(False)
+
+    def _clear_publish_queue_thread(self, thread) -> None:
+        if self.publish_queue_thread is thread:
+            self.publish_queue_thread = None
+        self.batch_publish_button.setEnabled(True)
+        self.stop_publish_queue_button.setEnabled(False)
+
+    def _on_publish_queue_progress(
+        self,
+        index: int,
+        total: int,
+        message: str,
+    ) -> None:
+        self.append_log(f"[发布队列 {index}/{total}] {message}")
+
+    def _on_publish_queue_completed(self, message: str) -> None:
+        self.append_log(message)
+        QtWidgets.QMessageBox.information(self, "批量发布完成", message)
+
+    def _on_publish_queue_failed(self, message: str) -> None:
+        self.append_log(f"批量发布失败：{message}")
+        QtWidgets.QMessageBox.critical(self, "批量发布失败", message)
 
     def on_finished(self, summary: dict) -> None:
         if "error" in summary:

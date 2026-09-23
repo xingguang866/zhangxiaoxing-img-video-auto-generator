@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +24,7 @@ from app import (
     count_chinese_characters,
 )
 from batch_parser import BatchItem, create_batch_template, load_batch_items
+from batch_publish_ui import BatchPublishQueueDialog
 from browser_assistant import (
     _commit_input_value,
     _configure_xiaohongshu_schedule,
@@ -61,6 +63,7 @@ from mock_engine import create_video_thumbnail, generate_mock_image, generate_mo
 from pricing_utils import format_pricing, format_usage
 from publish_platforms import PLATFORMS, build_platform_posts
 from publish_drafts import PublishDraft, new_publish_draft_id
+from publish_queue import evenly_arranged_entries
 from prompts import STYLE_PROMPTS, build_cover_prompt, build_image_prompt
 
 
@@ -316,6 +319,42 @@ class CoreTests(unittest.TestCase):
             )
         window.close()
 
+    def test_batch_publish_queue_schedule(self):
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / "image.png"
+            image.write_bytes(b"image")
+            drafts = [
+                PublishDraft(
+                    draft_id=new_publish_draft_id(),
+                    source_page="批量处理",
+                    media_paths=[str(image)],
+                    media_type="image",
+                    title=f"批量标题{index}",
+                    description="批量正文",
+                    tags=["测试"],
+                )
+                for index in range(3)
+            ]
+            start = datetime.now() + timedelta(hours=2)
+            entries = evenly_arranged_entries(
+                drafts,
+                start_at=start,
+                min_delay_minutes=5,
+                max_delay_minutes=10,
+            )
+            self.assertEqual(len(entries), 3)
+            self.assertEqual(entries[0].scheduled_at, start.replace(second=0, microsecond=0))
+            for previous, current in zip(entries, entries[1:]):
+                self.assertGreaterEqual(
+                    (current.scheduled_at - previous.scheduled_at).total_seconds(),
+                    5 * 60,
+                )
+
+            dialog = BatchPublishQueueDialog(drafts)
+            self.assertEqual(dialog.table.rowCount(), 3)
+            self.assertEqual(len(dialog.time_edits), 3)
+            dialog.close()
+
     def test_generation_pages_have_publish_entry_buttons(self):
         window = MainWindow()
         self.app.processEvents()
@@ -330,6 +369,10 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(
             window.batch_page.send_publish_button.text(),
             "发送到发布中心",
+        )
+        self.assertEqual(
+            window.batch_page.batch_publish_button.text(),
+            "批量排队发布小红书",
         )
         window.close()
 
