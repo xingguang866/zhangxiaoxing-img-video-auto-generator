@@ -502,7 +502,19 @@ class HypitSimplePage(QtWidgets.QWidget):
         self.open_studio_button.setEnabled(True)
         self.build_button.setEnabled(True)
         self.rewrite_button.setEnabled(True)
+        self.build_button.setText("导出参考画面")
+        self.rewrite_button.setText("按创作目标生成原创口播")
         self.open_output_button.setEnabled(self.project.output_path.exists())
+        speech = self.project.analysis.get("speech") or {}
+        if not speech.get("available"):
+            self.rewrite_status.setText(
+                "当前工程只有参考画面，没有可用原音。要生成符合创作目标且有声音的成片，"
+                "请继续点击“按创作目标生成原创口播”。"
+            )
+        else:
+            self.rewrite_status.setText(
+                "当前工程仍保留原片口播。要替换成你的创作目标文案，请继续生成原创口播版本。"
+            )
         self._append_log("可编辑工程已生成并通过 Hypit 校验。")
 
     def _on_failed(self, message: str) -> None:
@@ -626,6 +638,21 @@ class HypitSimplePage(QtWidgets.QWidget):
     def build_video(self) -> None:
         if not self.project or (self.build_thread and self.build_thread.isRunning()):
             return
+        is_rewrite = str(self.project.analysis.get("analysis_mode") or "").startswith("rewrite_")
+        speech = self.project.analysis.get("speech") or {}
+        if not is_rewrite and not speech.get("available"):
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "当前只是参考画面",
+                "这个工程还没有生成原创口播，并且参考视频没有可用音轨。"
+                "直接导出会得到无声视频。\n\n"
+                "请先点击“按创作目标生成原创口播”。是否仍要导出参考画面？",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
         self.build_button.setEnabled(False)
         self.progress.setVisible(True)
         self.status_label.setText("正在编译和渲染...")
@@ -711,6 +738,7 @@ class HypitSimplePage(QtWidgets.QWidget):
         self.open_workspace_button.setEnabled(True)
         self.open_studio_button.setEnabled(True)
         self.build_button.setEnabled(True)
+        self.build_button.setText("生成原创成片")
         self.open_output_button.setEnabled(False)
         self._append_log("原创口播工程已生成并通过 Hypit 校验。点击“生成成片”导出新版本。")
 
