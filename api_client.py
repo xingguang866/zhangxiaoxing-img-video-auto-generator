@@ -61,6 +61,7 @@ class APIMartClient:
         path: str,
         *,
         json_body: dict | None = None,
+        data: dict | None = None,
         files: dict | None = None,
         params: dict | None = None,
         timeout: int | None = None,
@@ -74,6 +75,7 @@ class APIMartClient:
                     self._url(path),
                     headers=self._headers(json_body=json_body is not None),
                     json=json_body,
+                    data=data,
                     files=files,
                     params=params,
                     timeout=timeout or self.config.timeout,
@@ -199,6 +201,91 @@ class APIMartClient:
         if not url:
             raise APIClientError(f"上传接口未返回图片 URL：{payload}")
         return str(url)
+
+    def transcribe_audio(
+        self,
+        audio_path: str | Path,
+        *,
+        language: str = "zh",
+        model: str = "whisper-1",
+    ) -> dict:
+        path = Path(audio_path)
+        if not path.exists():
+            raise APIClientError(f"音频文件不存在：{path}")
+        try:
+            with path.open("rb") as handle:
+                response = self._request(
+                    "POST",
+                    "/audio/transcriptions",
+                    files={"file": (path.name, handle, "audio/wav")},
+                    data={
+                        "model": model,
+                        "language": language,
+                        "response_format": "verbose_json",
+                    },
+                    timeout=max(self.config.timeout, 600),
+                    max_retries=1,
+                )
+        except OSError as exc:
+            raise APIClientError(f"音频读取失败：{exc}") from exc
+
+        payload = response.get("data", response)
+        if not isinstance(payload, dict):
+            raise APIClientError(f"音频转写返回格式异常：{response}")
+        return payload
+
+    def multimodal_response(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        image_data_uris: list[str],
+        max_tokens: int = 4000,
+        temperature: float = 0.2,
+    ) -> str:
+        content: list[dict] = [{"type": "input_text", "text": prompt}]
+        content.extend(
+            {"type": "input_image", "image_url": image_uri}
+            for image_uri in image_data_uris
+        )
+        response = self._request(
+            "POST",
+            "/responses",
+            json_body={
+                "model": model,
+                "stream": False,
+                "input": [{"role": "user", "content": content}],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=max(self.config.timeout, 600),
+            max_retries=1,
+        )
+        payload = response.get("data", response)
+        if not isinstance(payload, dict):
+            raise APIClientError(f"多模态分析返回格式异常：{response}")
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise APIClientError(f"多模态分析未返回结果：{payload}")
+        first = choices[0]
+        if not isinstance(first, dict):
+            raise APIClientError(f"多模态分析结果格式异常：{payload}")
+        message = first.get("message")
+        if not isinstance(message, dict):
+            raise APIClientError(f"多模态分析结果缺少 message：{payload}")
+        content_value = message.get("content")
+        if isinstance(content_value, str) and content_value.strip():
+            return content_value.strip()
+        if isinstance(content_value, list):
+            texts = [
+                str(item.get("text", ""))
+                for item in content_value
+                if isinstance(item, dict) and item.get("text")
+            ]
+            joined = "\n".join(texts).strip()
+            if joined:
+                return joined
+        raise APIClientError(f"多模态分析返回空文本：{payload}")
 
     @staticmethod
     def _normalize_image_resolution(model: str, resolution: str) -> str:

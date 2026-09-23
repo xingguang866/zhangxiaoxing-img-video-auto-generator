@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,12 @@ from hypit_service import (
     environment as hypit_environment,
     hypit_version,
     install_apib_provider,
+    run_hypit,
+)
+from hypit_reference import (
+    heuristic_analysis,
+    reference_workspace,
+    run_reference_workflow,
 )
 from hypit_tutorial import ASSET_DIR, build_tutorial_html
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
@@ -268,6 +275,71 @@ class CoreTests(unittest.TestCase):
         self.assertIn("Plan 不提交付费任务", html)
         self.assertIn("常见问题", html)
 
+    def test_hypit_reference_heuristic_analysis(self):
+        analysis = heuristic_analysis(
+            title="久坐护理",
+            hook="久坐党别忽略这件事",
+            language="zh",
+            aspect_ratio="9:16",
+            evidence={
+                "probe": {"duration": 12, "hasAudio": False},
+                "boundaries": {"candidates": [{"at": 3.5}, {"at": 7.2}]},
+            },
+            transcript={"available": False, "reason": "未检测到音轨"},
+        )
+        self.assertEqual(analysis["analysis_mode"], "heuristic")
+        self.assertEqual(analysis["hook"]["proposed_text"], "久坐党别忽略这件事")
+        self.assertEqual(len(analysis["rhythm"]["shot_change_candidates"]), 2)
+        self.assertIn("editable_project", analysis)
+
+    def test_hypit_reference_project_generation(self):
+        workspace_name = f"unittest_reference_{os.getpid()}"
+        workspace = reference_workspace(workspace_name)
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                source_root = Path(temp)
+                image = generate_mock_image(
+                    "生成一张3:4竖版参考图。",
+                    "清新治愈",
+                    source_root / "source.png",
+                    width=360,
+                    height=640,
+                )
+                video = generate_mock_video(
+                    [image],
+                    source_root / "source.mp4",
+                    duration=1,
+                    width=360,
+                    height=640,
+                )
+                project = run_reference_workflow(
+                    title="参考工程测试",
+                    hook="三秒看懂参考结构",
+                    source_file=str(video),
+                    source_url="",
+                    language="zh",
+                    aspect_ratio="9:16",
+                    analysis_model="",
+                    api_key="",
+                    base_url="https://api.apib.ai/v1",
+                    mock_mode=True,
+                    workspace_name=workspace_name,
+                )
+                self.assertTrue(project.svml_path.exists())
+                self.assertTrue(project.svrun_path.exists())
+                self.assertTrue(project.analysis_path.exists())
+                self.assertIn('family="noto-sans-sc"', project.svml_path.read_text(encoding="utf-8"))
+
+                relative_run = project.svrun_path.relative_to(project.workspace).as_posix()
+                plan = run_hypit(["plan", relative_run, "--json"], cwd=project.workspace, timeout=300)
+                self.assertEqual(plan.returncode, 0, plan.stderr or plan.stdout)
+                payload = json.loads(plan.stdout)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["unresolvedRequestCount"], 0)
+                self.assertEqual(payload["providerRequestCount"], 0)
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
     def test_ui_smoke(self):
         window = MainWindow()
         window.show()
@@ -278,6 +350,10 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(window.publish_page.tabs.count(), 5)
         self.assertIn("Hypit CLI", window.hypit_page.environment_label.toPlainText())
         self.assertEqual(window.hypit_page.tutorial_button.text(), "使用教程")
+        self.assertEqual(window.hypit_page.mode_tabs.count(), 2)
+        self.assertEqual(window.hypit_page.mode_tabs.tabText(0), "简易模式")
+        self.assertEqual(window.hypit_page.mode_tabs.tabText(1), "高级模式")
+        self.assertEqual(window.hypit_page.simple_page.start_button.text(), "一键分析并生成工程")
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["image"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["video"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)

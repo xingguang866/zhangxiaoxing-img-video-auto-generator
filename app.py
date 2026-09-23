@@ -31,6 +31,7 @@ from hypit_service import (
     run_hypit,
     start_hypit_process,
 )
+from hypit_simple_ui import HypitSimplePage
 from hypit_tutorial import build_tutorial_html
 from jianying_service import (
     create_jianying_draft,
@@ -109,11 +110,16 @@ FALLBACK_MODEL_CATALOG: dict[str, list[dict]] = {
         {"id": "suno-v6", "capability_tags": ["Audio", "Music", "Vocals"]},
     ],
     "chat": [
+        {"id": "gpt-5.2-pro", "capability_tags": ["Text", "Vision", "Reasoning"]},
+        {"id": "gpt-5.1", "capability_tags": ["Text", "Vision", "Reasoning"]},
         {"id": "gpt-5", "capability_tags": ["Text", "Vision"]},
         {"id": "gpt-4o", "capability_tags": ["Text", "Vision"]},
         {"id": "gpt-4o-mini", "capability_tags": ["Text", "Vision"]},
+        {"id": "claude-sonnet-4-6", "capability_tags": ["Text", "Vision"]},
         {"id": "claude-sonnet-4.5", "capability_tags": ["Text", "Vision"]},
         {"id": "claude-haiku-4.5", "capability_tags": ["Text", "Vision"]},
+        {"id": "gemini-3.1-pro-preview", "capability_tags": ["Text", "Vision"]},
+        {"id": "gemini-3-flash-preview", "capability_tags": ["Text", "Vision"]},
         {"id": "gemini-2.0-flash", "capability_tags": ["Text", "Vision"]},
         {"id": "qwen3.8-max", "capability_tags": ["Text", "Reasoning"]},
     ],
@@ -2136,7 +2142,12 @@ class HypitPage(QtWidgets.QWidget):
         self.initialize_thread: HypitInitializeThread | None = None
         self.apib_thread: HypitApibSetupThread | None = None
 
-        root = QtWidgets.QHBoxLayout(self)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.mode_tabs = QtWidgets.QTabWidget()
+        advanced = QtWidgets.QWidget()
+        root = QtWidgets.QHBoxLayout(advanced)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(14)
 
@@ -2302,6 +2313,10 @@ class HypitPage(QtWidgets.QWidget):
 
         root.addWidget(scrollable_side_card(side, width=500))
         root.addWidget(log_card, 1)
+        self.simple_page = HypitSimplePage(main_window, self)
+        self.mode_tabs.addTab(self.simple_page, "简易模式")
+        self.mode_tabs.addTab(advanced, "高级模式")
+        outer.addWidget(self.mode_tabs)
         self.append_log("Hypit 独立栏目已就绪。")
 
     def refresh_environment_text(self) -> None:
@@ -3305,6 +3320,7 @@ class MainWindow(QtWidgets.QMainWindow):
             model_ids(catalog, "image"),
             model_ids(catalog, "video"),
         )
+        self.hypit_page.simple_page.set_models(catalog)
 
     def refresh_models(self, silent: bool = False) -> None:
         if thread_is_running(self._model_fetch_thread):
