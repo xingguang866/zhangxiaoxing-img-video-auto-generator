@@ -31,9 +31,11 @@ from hypit_reference import (
     ReferenceWorkflowError,
     align_duration_to_frame,
     heuristic_analysis,
+    is_douyin_url,
     normalize_reference_url,
     reference_workspace,
     run_reference_workflow,
+    select_best_browser_media,
 )
 from hypit_tutorial import ASSET_DIR, build_tutorial_html
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
@@ -311,6 +313,28 @@ class CoreTests(unittest.TestCase):
         )
         with self.assertRaises(ReferenceWorkflowError):
             normalize_reference_url("这是一段没有链接的分享文案")
+
+    def test_hypit_douyin_browser_media_selection(self):
+        self.assertTrue(is_douyin_url("https://v.douyin.com/abc123/"))
+        self.assertTrue(is_douyin_url("https://www.douyin.com/video/123"))
+        self.assertFalse(is_douyin_url("https://www.bilibili.com/video/BV123"))
+        best = select_best_browser_media(
+            [
+                {
+                    "url": "https://lf-douyin-pc-web.douyinstatic.com/obj/sample.mp4",
+                    "status": 206,
+                },
+                {
+                    "url": "https://v26-web.douyinvod.com/video/sample.mp4?br=736",
+                    "status": 206,
+                },
+                {
+                    "url": "https://v26-web.douyinvod.com/video/sample.mp4?br=1674",
+                    "status": 206,
+                },
+            ]
+        )
+        self.assertIn("br=1674", best["url"])
 
     def test_hypit_reference_project_generation(self):
         workspace_name = f"unittest_reference_{os.getpid()}"

@@ -10,8 +10,11 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
 
+import requests
 from PIL import Image
+from playwright.sync_api import sync_playwright
 
 from api_client import APIClientError, APIConfig, APIMartClient
 from hypit_service import (
@@ -85,6 +88,119 @@ def normalize_reference_url(value: str) -> str:
             "视频链接格式不正确，请使用以 http:// 或 https:// 开头的完整链接。"
         )
     return candidate
+
+
+def is_douyin_url(value: str) -> bool:
+    host = urlparse(value).hostname or ""
+    host = host.lower()
+    return host == "douyin.com" or host.endswith(".douyin.com") or host.endswith(".iesdouyin.com")
+
+
+def select_best_browser_media(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not items:
+        return None
+
+    def score(item: dict[str, Any]) -> tuple[int, int]:
+        url = str(item.get("url") or "")
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        bitrate = int(query.get("br", ["0"])[0] or 0)
+        ranked_host = 1000 if parsed.hostname and "douyinvod.com" in parsed.hostname else 0
+        return ranked_host + bitrate, int(item.get("status") or 0)
+
+    return max(items, key=score)
+
+
+def fetch_douyin_video_with_browser(
+    source_url: str,
+    *,
+    destination: Path,
+    progress: ProgressCallback | None = None,
+) -> Path:
+    notify = progress or (lambda _message: None)
+    notify("正在使用 Edge 打开抖音视频页面...")
+    captured: list[dict[str, Any]] = []
+    page_url = source_url
+    user_agent = ""
+
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch(channel="msedge", headless=True)
+        except Exception:
+            browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(locale="zh-CN")
+        page = context.new_page()
+
+        def on_response(response) -> None:
+            try:
+                content_type = response.headers.get("content-type", "")
+                request_type = response.request.resource_type
+                media_url = response.url
+                if request_type != "media" and "video/mp4" not in content_type:
+                    return
+                if not media_url.startswith(("http://", "https://")):
+                    return
+                captured.append(
+                    {
+                        "url": media_url,
+                        "status": response.status,
+                        "content_type": content_type,
+                        "headers": dict(response.request.headers),
+                    }
+                )
+            except Exception:
+                return
+
+        page.on("response", on_response)
+        try:
+            page.goto(source_url, wait_until="domcontentloaded", timeout=90000)
+            page.wait_for_timeout(8000)
+            page_url = page.url
+            user_agent = page.evaluate("navigator.userAgent")
+        finally:
+            browser.close()
+
+    media = select_best_browser_media(captured)
+    if not media:
+        raise ReferenceWorkflowError(
+            "Edge 已打开抖音页面，但没有捕获到视频媒体地址。"
+            "该视频可能需要登录、已经下架，或页面加载超时。"
+        )
+
+    request_headers = {
+        key: value
+        for key, value in (media.get("headers") or {}).items()
+        if str(key).lower() in {"user-agent", "referer", "accept", "accept-language"}
+    }
+    request_headers["User-Agent"] = user_agent or request_headers.get("User-Agent", "")
+    request_headers["Referer"] = page_url
+    request_headers["Accept"] = "video/mp4,video/*;q=0.9,*/*;q=0.8"
+    request_headers["Accept-Encoding"] = "identity"
+
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    temporary.parent.mkdir(parents=True, exist_ok=True)
+    notify("已捕获视频地址，正在下载抖音参考视频...")
+    try:
+        with requests.get(
+            str(media["url"]),
+            headers=request_headers,
+            stream=True,
+            timeout=600,
+        ) as response:
+            response.raise_for_status()
+            with temporary.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=1024 * 256):
+                    if chunk:
+                        handle.write(chunk)
+    except (requests.RequestException, OSError) as exc:
+        temporary.unlink(missing_ok=True)
+        raise ReferenceWorkflowError(f"抖音视频下载失败：{exc}") from exc
+
+    if not temporary.exists() or temporary.stat().st_size < 1024:
+        temporary.unlink(missing_ok=True)
+        raise ReferenceWorkflowError("抖音视频下载结果为空。")
+    temporary.replace(destination)
+    return destination
 
 
 def reference_workspace(name: str = DEFAULT_WORKSPACE_NAME) -> Path:
@@ -195,6 +311,14 @@ def resolve_reference_video(
     if not source_url:
         raise ReferenceWorkflowError("请填写视频链接或选择本地 MP4 文件。")
     source_url = normalize_reference_url(source_url)
+
+    if is_douyin_url(source_url):
+        destination = assets / "reference.mp4"
+        return fetch_douyin_video_with_browser(
+            source_url,
+            destination=destination,
+            progress=notify,
+        )
 
     notify("正在准备视频下载组件...")
     prepare = run_hypit(["media", "prepare-fetch"], cwd=workspace, timeout=1800)
