@@ -24,6 +24,7 @@ from app import (
 )
 from batch_parser import BatchItem, create_batch_template, load_batch_items
 from browser_assistant import (
+    _commit_input_value,
     _configure_xiaohongshu_schedule,
     _find_xiaohongshu_publish_button,
     _fill_field,
@@ -344,11 +345,8 @@ class CoreTests(unittest.TestCase):
                 page = browser.new_page()
                 page.goto(fixture.as_uri(), wait_until="domcontentloaded")
                 uploaded = _upload_files(page, [image])
-                title_filled = _fill_field(
-                    page,
-                    ['input[placeholder*="标题"]'],
-                    "测试标题",
-                )
+                title_input = page.locator('input[placeholder*="标题"]')
+                title_filled = _commit_input_value(title_input, "测试标题")
                 body_filled = _fill_field(
                     page,
                     ['textarea[placeholder*="正文"]'],

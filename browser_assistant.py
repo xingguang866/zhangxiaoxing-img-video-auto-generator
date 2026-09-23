@@ -274,6 +274,28 @@ def _fill_field(page: Page, selectors: list[str], value: str) -> bool:
             return False
 
 
+def _commit_input_value(locator, value: str) -> bool:
+    try:
+        locator.click(timeout=3000)
+        locator.fill(value, timeout=3000)
+        locator.evaluate(
+            """(element, nextValue) => {
+                const setter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    'value'
+                )?.set;
+                if (setter) setter.call(element, nextValue);
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+                element.blur();
+            }""",
+            value,
+        )
+        return str(locator.input_value() or "").strip() == value.strip()
+    except Exception:
+        return False
+
+
 def _upload_files(
     page: Page,
     media_paths: list[str | Path],
@@ -433,8 +455,11 @@ def _configure_xiaohongshu_schedule(
     if date_input is None:
         raise RuntimeError("没有找到小红书定时发布日期输入框。")
     date_input.click(timeout=3000)
-    date_input.fill(schedule_at, timeout=3000)
-    date_input.press("Enter")
+    if not _commit_input_value(date_input, schedule_at):
+        raise RuntimeError("定时发布时间没有成功写入页面。")
+    page.locator(
+        ".post-time-switch-container"
+    ).click(timeout=3000, position={"x": 5, "y": 5})
     page.wait_for_timeout(1000)
     value = str(date_input.input_value() or "").strip()
     if value != schedule_at:
@@ -442,6 +467,50 @@ def _configure_xiaohongshu_schedule(
             f"定时发布时间没有正确写入，页面当前值为：{value or '空'}"
         )
     return True, schedule_at
+
+
+def _verify_xiaohongshu_draft_fields(
+    page: Page,
+    *,
+    title: str,
+    description: str,
+    tags: list[str],
+    schedule_at: str,
+) -> None:
+    title_input = _first_visible(
+        page,
+        [
+            'input[placeholder*="填写标题"]',
+            'input[placeholder*="标题"]',
+        ],
+    )
+    if title_input is None or title_input.input_value().strip() != title.strip():
+        raise RuntimeError("发布前校验失败：标题没有写入小红书页面。")
+
+    editor = _first_visible(
+        page,
+        [
+            'div.tiptap[contenteditable="true"]',
+            '[contenteditable="true"]',
+        ],
+    )
+    if editor is None:
+        raise RuntimeError("发布前校验失败：没有找到正文编辑器。")
+    editor_text = str(editor.inner_text() or "")
+    if description.strip() and description.strip() not in editor_text:
+        raise RuntimeError("发布前校验失败：正文没有写入小红书页面。")
+    expected_tags = len([tag for tag in tags if tag.strip()])
+    if expected_tags and editor.locator("a.tiptap-topic").count() < expected_tags:
+        raise RuntimeError("发布前校验失败：话题标签没有全部写入。")
+    if schedule_at:
+        checkbox = page.locator(
+            '.post-time-switch-container input[type="checkbox"]'
+        ).first
+        date_input = page.locator(".date-picker-container input").first
+        if not checkbox.is_checked():
+            raise RuntimeError("发布前校验失败：定时发布开关没有开启。")
+        if str(date_input.input_value() or "").strip() != schedule_at:
+            raise RuntimeError("发布前校验失败：定时发布时间没有写入。")
 
 
 def _find_xiaohongshu_publish_button(page: Page):
@@ -640,14 +709,16 @@ def assist_upload_xiaohongshu(
                     "素材上传后没有出现标题输入框，请检查平台错误提示或素材格式。"
                 )
             notify("正在填写标题、正文和标签...")
-            result["title_filled"] = _fill_field(
+            title_input = _first_visible(
                 page,
                 [
                     'input[placeholder*="填写标题"]',
                     'input[placeholder*="标题"]',
-                    'textarea[placeholder*="标题"]',
                 ],
-                title,
+            )
+            result["title_filled"] = bool(
+                title_input is not None
+                and _commit_input_value(title_input, title)
             )
             result["description_filled"] = _fill_field(
                 page,
@@ -672,6 +743,13 @@ def assist_upload_xiaohongshu(
                 )
                 result["scheduled"] = scheduled
                 result["scheduled_at"] = actual_schedule
+            _verify_xiaohongshu_draft_fields(
+                page,
+                title=title,
+                description=description,
+                tags=tags,
+                schedule_at=schedule_at,
+            )
             if auto_publish:
                 publish_button = _find_xiaohongshu_publish_button(page)
                 if publish_button is None:
@@ -700,8 +778,17 @@ def assist_upload_xiaohongshu(
             )
             notify("标题、正文和标签处理完成，请人工确认最终发布。")
             if keep_open:
-                while context.pages:
-                    page.wait_for_timeout(1000)
+                pages_empty_since: float | None = None
+                while True:
+                    if context.pages:
+                        pages_empty_since = None
+                        page.wait_for_timeout(1000)
+                        continue
+                    if pages_empty_since is None:
+                        pages_empty_since = time.monotonic()
+                    if time.monotonic() - pages_empty_since > 10:
+                        break
+                    time.sleep(1)
         finally:
             try:
                 context.close()
