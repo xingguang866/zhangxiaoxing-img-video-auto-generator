@@ -9,5 +9,19 @@
     <input id="media" type="file" multiple accept="image/*,video/*">
     <input id="title" placeholder="填写标题">
     <textarea id="body" placeholder="填写正文"></textarea>
+    <div class="post-time-switch-container">
+      <div class="d-switch-simulator">
+        <input id="schedule-switch" type="checkbox">
+      </div>
+    </div>
+    <div class="date-picker-container">
+      <input class="d-text" value="">
+    </div>
+    <script>
+      document.querySelector(".d-switch-simulator").addEventListener("click", () => {
+        const checkbox = document.querySelector("#schedule-switch");
+        checkbox.checked = !checkbox.checked;
+      });
+    </script>
   </body>
 </html>

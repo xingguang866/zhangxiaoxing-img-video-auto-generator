@@ -2906,6 +2906,22 @@ class PublishPage(QtWidgets.QWidget):
                 "填写完成后自动点击最终发布（默认关闭）"
             )
             auto_publish_check.setChecked(False)
+            schedule_check = QtWidgets.QCheckBox("定时发布")
+            schedule_edit = QtWidgets.QDateTimeEdit(
+                QtCore.QDateTime.currentDateTime().addSecs(3600)
+            )
+            schedule_edit.setCalendarPopup(True)
+            schedule_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+            schedule_edit.setMinimumDateTime(
+                QtCore.QDateTime.currentDateTime().addSecs(3600)
+            )
+            schedule_edit.setMaximumDateTime(
+                QtCore.QDateTime.currentDateTime().addDays(14)
+            )
+            schedule_edit.setEnabled(False)
+
+            schedule_check.toggled.connect(schedule_edit.setEnabled)
+            schedule_check.toggled.connect(auto_publish_check.setChecked)
             login_buttons = QtWidgets.QHBoxLayout()
             login_button = QtWidgets.QPushButton("扫码登录小红书")
             check_login_button = QtWidgets.QPushButton("检测登录状态")
@@ -2943,6 +2959,15 @@ class PublishPage(QtWidgets.QWidget):
                 layout.addWidget(login_status)
                 layout.addLayout(login_buttons)
                 layout.addWidget(auto_publish_check)
+                schedule_row = QtWidgets.QHBoxLayout()
+                schedule_row.addWidget(schedule_check)
+                schedule_row.addWidget(schedule_edit, 1)
+                layout.addLayout(schedule_row)
+                layout.addWidget(
+                    hint_label(
+                        "定时发布必须点击小红书最终发布按钮，软件会自动启用自动发布。"
+                    )
+                )
                 layout.addWidget(section_label("发布内容"))
             layout.addWidget(QtWidgets.QLabel("标题"))
             layout.addWidget(title)
@@ -2967,6 +2992,8 @@ class PublishPage(QtWidgets.QWidget):
                 ),
                 "browser_combo": browser_combo,
                 "auto_publish_check": auto_publish_check,
+                "schedule_check": schedule_check,
+                "schedule_edit": schedule_edit,
             }
             self.tabs.addTab(page, profile.name)
         self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
@@ -3233,13 +3260,29 @@ class PublishPage(QtWidgets.QWidget):
         if key == "xiaohongshu":
             draft = self._draft_by_id(self.current_draft_id)
             xhs_widgets = self.platform_widgets["xiaohongshu"]
-            auto_publish = xhs_widgets["auto_publish_check"].isChecked()
+            schedule_check = xhs_widgets["schedule_check"]
+            schedule_at = (
+                xhs_widgets["schedule_edit"].dateTime().toString(
+                    "yyyy-MM-dd HH:mm"
+                )
+                if schedule_check.isChecked()
+                else ""
+            )
+            auto_publish = (
+                xhs_widgets["auto_publish_check"].isChecked()
+                or bool(schedule_at)
+            )
             if auto_publish:
+                action_text = (
+                    f"定时发布到：{schedule_at}"
+                    if schedule_at
+                    else "立即发布"
+                )
                 answer = QtWidgets.QMessageBox.question(
                     self,
                     "确认自动发布",
-                    "你已开启自动点击最终发布。软件填写并上传完成后，"
-                    "会尝试直接发布这条小红书笔记。\n\n是否继续？",
+                    f"软件填写并上传完成后，会尝试点击最终发布，执行："
+                    f"{action_text}。\n\n是否继续？",
                     QtWidgets.QMessageBox.StandardButton.Yes
                     | QtWidgets.QMessageBox.StandardButton.No,
                     QtWidgets.QMessageBox.StandardButton.No,
@@ -3257,6 +3300,7 @@ class PublishPage(QtWidgets.QWidget):
                     xhs_widgets["browser_combo"].currentData() or "edge"
                 ),
                 "auto_publish": auto_publish,
+                "schedule_at": schedule_at,
             }
         else:
             params = {

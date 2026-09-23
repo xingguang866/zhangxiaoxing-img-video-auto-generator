@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from playwright.sync_api import BrowserContext, Page, sync_playwright
@@ -388,6 +389,61 @@ def _append_xiaohongshu_tags(page: Page, tags: list[str]) -> int:
         return 0
 
 
+def _configure_xiaohongshu_schedule(
+    page: Page,
+    schedule_at: str,
+) -> tuple[bool, str]:
+    schedule_at = schedule_at.strip()
+    if not schedule_at:
+        return False, ""
+    try:
+        datetime.strptime(schedule_at, "%Y-%m-%d %H:%M")
+    except ValueError as exc:
+        raise RuntimeError("定时发布时间格式不正确，应为 YYYY-MM-DD HH:MM。") from exc
+
+    switch = _wait_for_any(
+        page,
+        [
+            ".post-time-switch-container .d-switch-simulator",
+            ".post-time-switch-container input[type=checkbox]",
+        ],
+        timeout_ms=10000,
+    )
+    if switch is None:
+        raise RuntimeError("小红书页面没有找到“定时发布”开关。")
+    try:
+        checkbox = page.locator(
+            '.post-time-switch-container input[type="checkbox"]'
+        ).first
+        if not checkbox.is_checked():
+            switch.scroll_into_view_if_needed(timeout=3000)
+            switch.click(force=True)
+            page.wait_for_timeout(1000)
+    except Exception as exc:
+        raise RuntimeError(f"开启小红书定时发布失败：{exc}") from exc
+
+    date_input = _wait_for_any(
+        page,
+        [
+            ".date-picker-container input.d-text",
+            ".date-picker-container input",
+        ],
+        timeout_ms=10000,
+    )
+    if date_input is None:
+        raise RuntimeError("没有找到小红书定时发布日期输入框。")
+    date_input.click(timeout=3000)
+    date_input.fill(schedule_at, timeout=3000)
+    date_input.press("Enter")
+    page.wait_for_timeout(1000)
+    value = str(date_input.input_value() or "").strip()
+    if value != schedule_at:
+        raise RuntimeError(
+            f"定时发布时间没有正确写入，页面当前值为：{value or '空'}"
+        )
+    return True, schedule_at
+
+
 def assist_upload(
     *,
     platform_key: str,
@@ -472,6 +528,7 @@ def assist_upload_xiaohongshu(
     keep_open: bool = True,
     browser_name: str = "edge",
     auto_publish: bool = False,
+    schedule_at: str = "",
     progress: Callable[[str], None] | None = None,
 ) -> dict:
     notify = progress or (lambda _message: None)
@@ -493,6 +550,8 @@ def assist_upload_xiaohongshu(
             "description_filled": False,
             "tags_filled": False,
             "published": False,
+            "scheduled": False,
+            "scheduled_at": "",
             "message": "",
         }
         try:
@@ -591,6 +650,14 @@ def assist_upload_xiaohongshu(
             result["tags_filled"] = inserted_tags == len(
                 [tag for tag in tags if tag.strip()]
             )
+            if schedule_at.strip():
+                notify(f"正在设置定时发布：{schedule_at}...")
+                scheduled, actual_schedule = _configure_xiaohongshu_schedule(
+                    page,
+                    schedule_at,
+                )
+                result["scheduled"] = scheduled
+                result["scheduled_at"] = actual_schedule
             if auto_publish:
                 publish_button = _first_visible(
                     page,
@@ -614,7 +681,12 @@ def assist_upload_xiaohongshu(
                 f"正文自动填写{'完成' if result['description_filled'] else '未完成'}，"
                 f"话题标签写入 {inserted_tags}/{len(tags)}。"
                 + (
-                    "已尝试自动点击最终发布，请在浏览器确认发布结果。"
+                    (
+                        f"已设置定时发布：{result['scheduled_at']}。"
+                        "已尝试点击最终发布，请在小红书确认定时任务。"
+                        if result["scheduled"]
+                        else "已尝试自动点击最终发布，请在浏览器确认发布结果。"
+                    )
                     if result["published"]
                     else "请检查预览、图片顺序和标签后，手动点击最终发布。"
                 )

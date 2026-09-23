@@ -23,7 +23,11 @@ from app import (
     count_chinese_characters,
 )
 from batch_parser import BatchItem, create_batch_template, load_batch_items
-from browser_assistant import _fill_field, _upload_files
+from browser_assistant import (
+    _configure_xiaohongshu_schedule,
+    _fill_field,
+    _upload_files,
+)
 from jianying_service import create_jianying_draft
 from hypit_service import (
     environment as hypit_environment,
@@ -357,6 +361,16 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(
                     page.locator("#body").input_value(),
                     "测试正文\n\n#肛周护理",
+                )
+                scheduled, schedule_at = _configure_xiaohongshu_schedule(
+                    page,
+                    "2026-09-30 10:30",
+                )
+                self.assertTrue(scheduled)
+                self.assertEqual(schedule_at, "2026-09-30 10:30")
+                self.assertEqual(
+                    page.locator(".date-picker-container input").input_value(),
+                    "2026-09-30 10:30",
                 )
                 browser.close()
 
@@ -751,6 +765,20 @@ class CoreTests(unittest.TestCase):
             2,
         )
         self.assertFalse(
+            window.publish_page.platform_widgets["xiaohongshu"][
+                "auto_publish_check"
+            ].isChecked()
+        )
+        schedule_check = window.publish_page.platform_widgets[
+            "xiaohongshu"
+        ]["schedule_check"]
+        schedule_edit = window.publish_page.platform_widgets[
+            "xiaohongshu"
+        ]["schedule_edit"]
+        self.assertFalse(schedule_edit.isEnabled())
+        schedule_check.setChecked(True)
+        self.assertTrue(schedule_edit.isEnabled())
+        self.assertTrue(
             window.publish_page.platform_widgets["xiaohongshu"][
                 "auto_publish_check"
             ].isChecked()
