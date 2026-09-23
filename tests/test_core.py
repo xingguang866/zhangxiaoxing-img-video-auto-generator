@@ -766,11 +766,6 @@ class CoreTests(unittest.TestCase):
             ].count(),
             2,
         )
-        self.assertFalse(
-            window.publish_page.platform_widgets["xiaohongshu"][
-                "auto_publish_check"
-            ].isChecked()
-        )
         schedule_check = window.publish_page.platform_widgets[
             "xiaohongshu"
         ]["schedule_check"]
@@ -780,11 +775,6 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(schedule_edit.isEnabled())
         schedule_check.setChecked(True)
         self.assertTrue(schedule_edit.isEnabled())
-        self.assertTrue(
-            window.publish_page.platform_widgets["xiaohongshu"][
-                "auto_publish_check"
-            ].isChecked()
-        )
         window.publish_page._on_login_result(
             "clear",
             True,

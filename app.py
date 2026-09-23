@@ -2884,10 +2884,6 @@ class PublishPage(QtWidgets.QWidget):
             browser_combo = QtWidgets.QComboBox()
             browser_combo.addItem("Microsoft Edge（推荐）", "edge")
             browser_combo.addItem("Google Chrome", "chrome")
-            auto_publish_check = QtWidgets.QCheckBox(
-                "填写完成后自动点击最终发布（默认关闭）"
-            )
-            auto_publish_check.setChecked(False)
             schedule_check = QtWidgets.QCheckBox("定时发布")
             schedule_edit = QtWidgets.QDateTimeEdit(
                 QtCore.QDateTime.currentDateTime().addSecs(3600)
@@ -2903,7 +2899,6 @@ class PublishPage(QtWidgets.QWidget):
             schedule_edit.setEnabled(False)
 
             schedule_check.toggled.connect(schedule_edit.setEnabled)
-            schedule_check.toggled.connect(auto_publish_check.setChecked)
             login_buttons = QtWidgets.QHBoxLayout()
             login_button = QtWidgets.QPushButton("扫码登录小红书")
             check_login_button = QtWidgets.QPushButton("检测登录状态")
@@ -2940,14 +2935,13 @@ class PublishPage(QtWidgets.QWidget):
                 layout.addWidget(browser_combo)
                 layout.addWidget(login_status)
                 layout.addLayout(login_buttons)
-                layout.addWidget(auto_publish_check)
                 schedule_row = QtWidgets.QHBoxLayout()
                 schedule_row.addWidget(schedule_check)
                 schedule_row.addWidget(schedule_edit, 1)
                 layout.addLayout(schedule_row)
                 layout.addWidget(
                     hint_label(
-                        "定时发布必须点击小红书最终发布按钮，软件会自动启用自动发布。"
+                        "软件只填写定时时间和发布内容，最终发布按钮仍由你手动点击。"
                     )
                 )
                 layout.addWidget(section_label("发布内容"))
@@ -2973,7 +2967,6 @@ class PublishPage(QtWidgets.QWidget):
                     clear_login_button,
                 ),
                 "browser_combo": browser_combo,
-                "auto_publish_check": auto_publish_check,
                 "schedule_check": schedule_check,
                 "schedule_edit": schedule_edit,
             }
@@ -3250,27 +3243,6 @@ class PublishPage(QtWidgets.QWidget):
                 if schedule_check.isChecked()
                 else ""
             )
-            auto_publish = (
-                xhs_widgets["auto_publish_check"].isChecked()
-                or bool(schedule_at)
-            )
-            if auto_publish:
-                action_text = (
-                    f"定时发布到：{schedule_at}"
-                    if schedule_at
-                    else "立即发布"
-                )
-                answer = QtWidgets.QMessageBox.question(
-                    self,
-                    "确认自动发布",
-                    f"软件填写并上传完成后，会尝试点击最终发布，执行："
-                    f"{action_text}。\n\n是否继续？",
-                    QtWidgets.QMessageBox.StandardButton.Yes
-                    | QtWidgets.QMessageBox.StandardButton.No,
-                    QtWidgets.QMessageBox.StandardButton.No,
-                )
-                if answer != QtWidgets.QMessageBox.StandardButton.Yes:
-                    return
             params = {
                 "media_paths": [str(path) for path in self.selected_media()],
                 "media_type": draft.media_type if draft else "image",
@@ -3281,7 +3253,7 @@ class PublishPage(QtWidgets.QWidget):
                 "browser_name": str(
                     xhs_widgets["browser_combo"].currentData() or "edge"
                 ),
-                "auto_publish": auto_publish,
+                "auto_publish": False,
                 "schedule_at": schedule_at,
             }
         else:

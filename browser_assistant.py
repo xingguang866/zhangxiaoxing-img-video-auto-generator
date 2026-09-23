@@ -298,6 +298,28 @@ def _commit_input_value(locator, value: str) -> bool:
         return False
 
 
+def _fill_tiptap_body(page: Page, editor, value: str) -> bool:
+    try:
+        editor.click(timeout=3000)
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Backspace")
+        lines = value.splitlines() or [value]
+        for index, line in enumerate(lines):
+            if line:
+                page.keyboard.type(line, delay=3)
+            if index < len(lines) - 1:
+                page.keyboard.press("Enter")
+        page.wait_for_timeout(800)
+        actual = str(editor.inner_text() or "")
+        return value.strip() in actual or " ".join(value.split()) in " ".join(actual.split())
+    except Exception:
+        return False
+
+
+def _normalize_editor_text(value: str) -> str:
+    return " ".join(str(value or "").replace("\u200b", "").split())
+
+
 def _upload_files(
     page: Page,
     media_paths: list[str | Path],
@@ -567,8 +589,11 @@ def _verify_xiaohongshu_draft_fields(
     )
     if editor is None:
         raise RuntimeError("发布前校验失败：没有找到正文编辑器。")
-    editor_text = str(editor.inner_text() or "")
-    if description.strip() and description.strip() not in editor_text:
+    editor_text = _normalize_editor_text(editor.inner_text())
+    if (
+        description.strip()
+        and _normalize_editor_text(description) not in editor_text
+    ):
         raise RuntimeError("发布前校验失败：正文没有写入小红书页面。")
     expected_tags = len([tag for tag in tags if tag.strip()])
     if expected_tags and editor.locator("a.tiptap-topic").count() < expected_tags:
@@ -797,15 +822,20 @@ def assist_upload_xiaohongshu(
                 title_input is not None
                 and _commit_input_value(title_input, title)
             )
-            result["description_filled"] = _fill_field(
+            body_editor = _first_visible(
                 page,
                 [
+                    'div.tiptap[contenteditable="true"]',
+                    '[contenteditable="true"]',
                     'textarea[placeholder*="正文"]',
                     'textarea[placeholder*="描述"]',
-                    'textarea[placeholder*="填写"]',
-                    'div[contenteditable="true"]',
-                    '[contenteditable="true"]',
                 ],
+            )
+            if body_editor is None:
+                raise RuntimeError("没有找到小红书正文编辑器。")
+            result["description_filled"] = _fill_tiptap_body(
+                page,
+                body_editor,
                 description,
             )
             inserted_tags = _append_xiaohongshu_tags(page, tags)
