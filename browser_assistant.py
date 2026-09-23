@@ -444,6 +444,20 @@ def _configure_xiaohongshu_schedule(
     return True, schedule_at
 
 
+def _find_xiaohongshu_publish_button(page: Page):
+    return _wait_for_any(
+        page,
+        [
+            '.publish-video .btn-wrapper:has-text("发布笔记")',
+            'div.btn-wrapper:has-text("发布笔记")',
+            'div.btn-inner:has-text("发布笔记")',
+            'button:has-text("发布笔记")',
+            'button:has-text("发布")',
+        ],
+        timeout_ms=5000,
+    )
+
+
 def assist_upload(
     *,
     platform_key: str,
@@ -659,14 +673,7 @@ def assist_upload_xiaohongshu(
                 result["scheduled"] = scheduled
                 result["scheduled_at"] = actual_schedule
             if auto_publish:
-                publish_button = _first_visible(
-                    page,
-                    [
-                        'button:has-text("发布笔记")',
-                        'button:has-text("发布")',
-                        'div[role="button"]:has-text("发布")',
-                    ],
-                )
+                publish_button = _find_xiaohongshu_publish_button(page)
                 if publish_button is None:
                     raise RuntimeError(
                         "未找到小红书最终发布按钮，页面已保留。"
