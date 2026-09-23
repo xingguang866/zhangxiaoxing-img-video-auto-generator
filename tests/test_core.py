@@ -157,6 +157,35 @@ class CoreTests(unittest.TestCase):
             "direct-ok",
         )
 
+    def test_speech_payload_supports_apib_tts_routes(self):
+        client = APIMartClient(
+            APIConfig(base_url="https://api.apib.ai/v1", api_key="test-key")
+        )
+        captured = {}
+
+        class FakeResponse:
+            ok = True
+            status_code = 200
+            content = b"RIFFtest"
+            text = ""
+
+        class FakeSession:
+            def post(self, url, **kwargs):
+                captured.update({"url": url, "kwargs": kwargs})
+                return FakeResponse()
+
+        client.session = FakeSession()
+        content = client.synthesize_speech(
+            text="测试配音",
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            response_format="wav",
+        )
+        self.assertEqual(content, b"RIFFtest")
+        self.assertTrue(captured["url"].endswith("/audio/speech"))
+        self.assertEqual(captured["kwargs"]["json"]["input"], "测试配音")
+        self.assertEqual(captured["kwargs"]["json"]["prompt"], "测试配音")
+
     def test_pricing_formatting(self):
         token_pricing = {
             "pricing": {

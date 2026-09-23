@@ -662,7 +662,7 @@ class HypitSimplePage(QtWidgets.QWidget):
             originality_level=self.originality_combo.currentText(),
             remove_ai_flavor=self.remove_ai_check.isChecked(),
             remove_promotional=self.remove_promo_check.isChecked(),
-            tts_model=self.tts_model_combo.currentText().strip() or "tts-1",
+            tts_model=self.tts_model_combo.currentText().strip() or "gpt-4o-mini-tts",
             voice=self.voice_combo.currentText().strip() or "alloy",
             language=LANGUAGE_OPTIONS.get(self.language_combo.currentText(), "zh"),
         )

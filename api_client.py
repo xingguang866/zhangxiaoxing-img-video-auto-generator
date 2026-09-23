@@ -356,6 +356,7 @@ class APIMartClient:
                 json={
                     "model": model,
                     "input": text.strip(),
+                    "prompt": text.strip(),
                     "voice": voice,
                     "response_format": response_format,
                     "speed": speed,

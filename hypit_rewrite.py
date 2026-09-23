@@ -26,7 +26,7 @@ from hypit_service import environment, run_hypit
 
 
 ProgressCallback = Callable[[str], None]
-TTS_MODELS = ["tts-1", "gpt-4o-mini-tts", "fishaudio-tts"]
+TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd", "fishaudio-tts"]
 TTS_VOICES = ["alloy", "coral", "nova", "shimmer", "echo", "fable", "onyx", "verse", "ballad", "ash", "sage"]
 
 
@@ -36,7 +36,7 @@ class RewriteOptions:
     originality_level: str = "中度改写"
     remove_ai_flavor: bool = True
     remove_promotional: bool = True
-    tts_model: str = "tts-1"
+    tts_model: str = "gpt-4o-mini-tts"
     voice: str = "alloy"
     language: str = "zh"
 
