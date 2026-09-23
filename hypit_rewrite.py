@@ -16,8 +16,8 @@ from hypit_reference import (
     ReferenceProject,
     ReferenceWorkflowError,
     _workspace_relative,
-    align_duration_to_frame,
     extract_audio,
+    frames_for_duration,
     prepare_reference_workspace,
     reference_workspace,
     _unique_run_dir,
@@ -433,10 +433,10 @@ def _write_srt(segments: list[dict[str, Any]], destination: Path) -> None:
     destination.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _frame_window(start: float, end: float, frame_rate: int = 30) -> tuple[float, float]:
+def _frame_window(start: float, end: float, frame_rate: int = 30) -> tuple[int, int]:
     start_frame = max(0, int(start * frame_rate))
     end_frame = max(start_frame + 1, math.ceil(end * frame_rate))
-    return start_frame / frame_rate, (end_frame - start_frame) / frame_rate
+    return start_frame, end_frame - start_frame
 
 
 def generate_rewritten_project(
@@ -464,7 +464,8 @@ def generate_rewritten_project(
     audio_probe = _probe_media(audio_path)
     video_duration = max(1.0, float(video_probe.get("duration") or 1))
     audio_duration = max(1.0, float(audio_probe.get("duration") or 1))
-    duration = align_duration_to_frame(max(video_duration, audio_duration))
+    duration_frames = frames_for_duration(max(video_duration, audio_duration))
+    duration = duration_frames / 30
     width, height = 720, 1280
     title = str(rewrite.get("title") or "原创口播视频").strip()
     hook = str(rewrite.get("hook") or title).strip()
@@ -474,7 +475,7 @@ def generate_rewritten_project(
         fallback_text=full_script,
         duration=duration,
     )
-    title_duration = min(3.0, duration)
+    title_frames = min(90, duration_frames)
 
     rewrite_path = run_dir / "rewrite.json"
     rewrite_path.write_text(
@@ -486,14 +487,14 @@ def generate_rewritten_project(
 
     subtitle_areas: list[str] = []
     for index, segment in enumerate(segments, start=1):
-        at, item_duration = _frame_window(
+        at_frame, item_frames = _frame_window(
             float(segment["start"]),
             float(segment["end"]),
         )
         subtitle_areas.append(
             f"""    <typo:Area id="subtitle-{index}"
       placement={{subtitle-frame}} style={{subtitle-style}}
-      at="{at:.6f}s" for="{item_duration:.6f}s">
+      at="{at_frame}f" for="{item_frames}f">
       <typo:P>{escape(str(segment["text"]))}</typo:P>
     </typo:Area>"""
         )
@@ -530,7 +531,7 @@ def generate_rewritten_project(
     video="primary-moving" audio="none" span-authority="video"/>
   <pipeline:Normalize id="voice-media" source={{voiceover}} clock={{clock}}
     video="none" audio="default" span-authority="audio"/>
-  <time:Timeline id="program" clock={{clock}} end="{duration:.6f}s"/>
+  <time:Timeline id="program" clock={{clock}} end="{duration_frames}f"/>
 
   <media-track:Track id="reference-track" timeline={{program.timeline}} canvas={{canvas}}>
     <media-track:Item id="reference-item" media={{reference-media.media}}
@@ -555,7 +556,7 @@ def generate_rewritten_project(
   </typo:Style>
   <typo:Track id="titles" timeline={{program.timeline}}>
     <typo:Area id="hook-title" content={{hook-copy}} placement={{hook-frame}}
-      style={{title-style}} at="0s" for="{title_duration:.6f}s"/>
+      style={{title-style}} at="0f" for="{title_frames}f"/>
   </typo:Track>
   <typo:Track id="subtitles" timeline={{program.timeline}}>
 {chr(10).join(subtitle_areas)}

@@ -646,10 +646,14 @@ def _canvas_for(aspect_ratio: str) -> tuple[int, int]:
     return 720, 1280
 
 
-def align_duration_to_frame(seconds: float, frame_rate: int = 30) -> float:
+def frames_for_duration(seconds: float, frame_rate: int = 30) -> int:
     if frame_rate <= 0:
         raise ValueError("frame_rate must be positive")
-    return max(1, int(float(seconds) * frame_rate)) / frame_rate
+    return max(1, int(float(seconds) * frame_rate))
+
+
+def align_duration_to_frame(seconds: float, frame_rate: int = 30) -> float:
+    return frames_for_duration(seconds, frame_rate) / frame_rate
 
 
 def _srt_time(seconds: float) -> str:
@@ -705,10 +709,11 @@ def generate_reference_project(
     title = title.strip() or "参考视频二次创作"
     hook = hook.strip() or title
     raw_duration = max(1.0, float((evidence.get("probe") or {}).get("duration") or 1.0))
-    duration = align_duration_to_frame(raw_duration)
+    duration_frames = frames_for_duration(raw_duration)
+    duration = duration_frames / 30
     has_audio = bool((evidence.get("probe") or {}).get("hasAudio"))
     width, height = _canvas_for(aspect_ratio)
-    title_duration = min(3.0, duration)
+    title_frames = min(90, duration_frames)
     title_text = escape(hook)
 
     analysis_path = analysis_dir / "analysis.json"
@@ -749,7 +754,7 @@ def generate_reference_project(
     left="8%" top="10%" right="92%" bottom="34%"/>
   <pipeline:Normalize id="reference-media" source={{reference}} clock={{clock}}
     video="primary-moving" audio="{'default' if has_audio else 'none'}" span-authority="video"/>
-  <time:Timeline id="program" clock={{clock}} end="{duration:.3f}s"/>
+  <time:Timeline id="program" clock={{clock}} end="{duration_frames}f"/>
 
   <media-track:Track id="reference-track" timeline={{program.timeline}} canvas={{canvas}}>
     <media-track:Item id="reference-item" media={{reference-media.media}}
@@ -765,7 +770,7 @@ def generate_reference_project(
   </typo:Style>
   <typo:Track id="titles" timeline={{program.timeline}}>
     <typo:Area id="hook-title" content={{hook-copy}} placement={{hook-frame}}
-      style={{title-style}} at="0s" for="{title_duration:.3f}s"/>
+      style={{title-style}} at="0f" for="{title_frames}f"/>
   </typo:Track>
 
   <film:Film id="main" canvas={{canvas}} timeline={{program.timeline}}

@@ -30,6 +30,7 @@ from hypit_service import (
 from hypit_reference import (
     ReferenceWorkflowError,
     align_duration_to_frame,
+    frames_for_duration,
     heuristic_analysis,
     is_douyin_url,
     normalize_reference_url,
@@ -370,6 +371,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(align_duration_to_frame(44.033), 44.0)
         self.assertEqual(align_duration_to_frame(44.034), 44.03333333333333)
         self.assertEqual(align_duration_to_frame(0.01), 1 / 30)
+        self.assertEqual(frames_for_duration(61.43333333333333), 1843)
 
     def test_hypit_reference_url_normalization(self):
         self.assertEqual(
@@ -441,7 +443,9 @@ class CoreTests(unittest.TestCase):
                 self.assertTrue(project.svml_path.exists())
                 self.assertTrue(project.svrun_path.exists())
                 self.assertTrue(project.analysis_path.exists())
-                self.assertIn('family="noto-sans-sc"', project.svml_path.read_text(encoding="utf-8"))
+                document = project.svml_path.read_text(encoding="utf-8")
+                self.assertIn('family="noto-sans-sc"', document)
+                self.assertRegex(document, r'end="\d+f"')
 
                 relative_run = project.svrun_path.relative_to(project.workspace).as_posix()
                 plan = run_hypit(["plan", relative_run, "--json"], cwd=project.workspace, timeout=300)
@@ -518,6 +522,7 @@ class CoreTests(unittest.TestCase):
                 self.assertIn("@hypit/audio-track@1", document)
                 self.assertIn("<typo:Track id=\"subtitles\"", document)
                 self.assertIn("别再反复干擦", document)
+                self.assertRegex(document, r'end="\d+f"')
 
                 relative_run = rewritten.svrun_path.relative_to(rewritten.workspace).as_posix()
                 plan = run_hypit(["plan", relative_run, "--json"], cwd=rewritten.workspace, timeout=300)
