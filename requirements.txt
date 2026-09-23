@@ -7,3 +7,4 @@ pyJianYingDraft==0.3.0
 pymediainfo>=7.0
 playwright==1.63.0
 static-ffmpeg==3.0
+psutil>=5.9

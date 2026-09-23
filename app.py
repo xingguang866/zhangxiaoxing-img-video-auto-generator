@@ -79,7 +79,7 @@ VIDEO_MODELS = [
     "veo3.1-quality",
 ]
 IMAGE_SIZES = ["3:4", "4:5", "9:16", "1:1", "16:9"]
-IMAGE_RESOLUTIONS = ["1k", "2k", "4k"]
+IMAGE_RESOLUTIONS = ["720p", "1k", "2k", "4k"]
 VIDEO_SIZES = ["9:16", "16:9", "1:1", "3:4", "adaptive"]
 VIDEO_RESOLUTIONS = ["720p", "1080p", "480p", "4k"]
 MODEL_CATEGORY_LABELS = {
@@ -232,6 +232,7 @@ def build_batch_image_jobs(item: BatchItem) -> list[dict]:
             ),
             "title": f"{item.theme}_封面",
             "size": "3:4",
+            "resolution": item.image_resolution or "1k",
         }
     ]
     jobs.extend(
@@ -240,6 +241,7 @@ def build_batch_image_jobs(item: BatchItem) -> list[dict]:
             "is_cover": False,
             "prompt": prompt,
             "title": f"{item.theme}_图{index}",
+            "resolution": item.image_resolution or "1k",
         }
         for index, prompt in enumerate(item.image_prompts, start=1)
     )
@@ -396,6 +398,7 @@ class GenerationWorker(QtCore.QThread):
         image_paths: list[Path],
         image_urls: list[str],
         destination: Path,
+        resolution: str | None = None,
     ) -> tuple[Path, str, Path | None]:
         remote_urls = list(image_urls)
         if image_paths:
@@ -410,7 +413,7 @@ class GenerationWorker(QtCore.QThread):
             model=self.settings["video_model"],
             image_urls=remote_urls or None,
             size=self.settings["video_size"],
-            resolution=self.settings["video_resolution"],
+            resolution=resolution or self.settings["video_resolution"],
             duration=self.settings["video_duration"],
             generate_audio=self.settings["generate_audio"],
         )
@@ -643,6 +646,8 @@ class GenerationWorker(QtCore.QThread):
                     image_paths=image_paths,
                     image_urls=[],
                     destination=destination,
+                    resolution=item.video_resolution
+                    or self.settings["video_resolution"],
                 )
             item.video_paths.append(path)
             generated += 1
@@ -1488,9 +1493,15 @@ class BatchPage(BaseGenerationPage):
         self.image_model_combo = QtWidgets.QComboBox()
         self.image_model_combo.setEditable(True)
         self.image_model_combo.addItems(IMAGE_MODELS)
+        self.batch_image_resolution_combo = QtWidgets.QComboBox()
+        self.batch_image_resolution_combo.addItems(IMAGE_RESOLUTIONS)
+        self.batch_image_resolution_combo.setCurrentText("720p")
         self.video_model_combo = QtWidgets.QComboBox()
         self.video_model_combo.setEditable(True)
         self.video_model_combo.addItems(VIDEO_MODELS)
+        self.batch_video_resolution_combo = QtWidgets.QComboBox()
+        self.batch_video_resolution_combo.addItems(VIDEO_RESOLUTIONS)
+        self.batch_video_resolution_combo.setCurrentText("720p")
         self.video_mode_combo = QtWidgets.QComboBox()
         self.video_mode_combo.addItems(["每张图片各生成一条", "每组素材合成一条"])
         self.generate_images_button = QtWidgets.QPushButton("批量生成图片")
@@ -1507,8 +1518,12 @@ class BatchPage(BaseGenerationPage):
         controls.addWidget(self.style_combo)
         controls.addWidget(QtWidgets.QLabel("图片模型"))
         controls.addWidget(self.image_model_combo, 1)
+        controls.addWidget(QtWidgets.QLabel("图片清晰度"))
+        controls.addWidget(self.batch_image_resolution_combo)
         controls.addWidget(QtWidgets.QLabel("视频模型"))
         controls.addWidget(self.video_model_combo, 1)
+        controls.addWidget(QtWidgets.QLabel("视频清晰度"))
+        controls.addWidget(self.batch_video_resolution_combo)
         controls.addWidget(self.video_mode_combo)
         controls.addWidget(self.generate_images_button)
         controls.addWidget(self.generate_videos_button)
@@ -1709,10 +1724,13 @@ class BatchPage(BaseGenerationPage):
                 "style": self.style_combo.currentText(),
                 "image_model": self.image_model_combo.currentText().strip(),
                 "image_size": "3:4",
-                "image_resolution": "1k",
+                "image_resolution": self.batch_image_resolution_combo.currentText(),
             }
         )
         items = [copy.deepcopy(item) for item in self.items]
+        selected_resolution = self.batch_image_resolution_combo.currentText()
+        for item in items:
+            item.image_resolution = item.image_resolution or selected_resolution
         self.save_output_dir()
         output_base = Path(self.output_edit.text().strip() or settings["batch_output_dir"])
         output_dir = output_base / f"批量图片_{datetime.now():%Y%m%d_%H%M%S}"
@@ -1731,12 +1749,15 @@ class BatchPage(BaseGenerationPage):
             {
                 "video_model": self.video_model_combo.currentText().strip(),
                 "video_size": "9:16",
-                "video_resolution": "720p",
+                "video_resolution": self.batch_video_resolution_combo.currentText(),
                 "video_duration": 5,
                 "generate_audio": False,
             }
         )
         items = [copy.deepcopy(item) for item in self.items]
+        selected_resolution = self.batch_video_resolution_combo.currentText()
+        for item in items:
+            item.video_resolution = item.video_resolution or selected_resolution
         self.save_output_dir()
         output_base = Path(self.output_edit.text().strip() or settings["batch_output_dir"])
         output_dir = output_base / f"批量视频_{datetime.now():%Y%m%d_%H%M%S}"
@@ -2740,16 +2761,21 @@ class PublishAssistThread(QtCore.QThread):
 class XiaohongshuLoginThread(QtCore.QThread):
     result = QtCore.Signal(bool, str)
 
-    def __init__(self, action: str, parent=None):
+    def __init__(self, action: str, browser_name: str = "edge", parent=None):
         super().__init__(parent)
         self.action = action
+        self.browser_name = browser_name
 
     def run(self) -> None:
         try:
             if self.action == "login":
-                success, message = xiaohongshu_login()
+                success, message = xiaohongshu_login(
+                    browser_name=self.browser_name
+                )
             elif self.action == "check":
-                success, message = xiaohongshu_login_status()
+                success, message = xiaohongshu_login_status(
+                    browser_name=self.browser_name
+                )
             elif self.action == "clear":
                 success, message = True, clear_xiaohongshu_login()
             else:
@@ -2867,6 +2893,13 @@ class PublishPage(QtWidgets.QWidget):
             tags.setPlaceholderText("平台标签")
             validation = hint_label("尚未生成适配文案。")
             login_status = hint_label("小红书登录状态：未检测。")
+            browser_combo = QtWidgets.QComboBox()
+            browser_combo.addItem("Microsoft Edge（推荐）", "edge")
+            browser_combo.addItem("Google Chrome", "chrome")
+            auto_publish_check = QtWidgets.QCheckBox(
+                "填写完成后自动点击最终发布（默认关闭）"
+            )
+            auto_publish_check.setChecked(False)
             login_buttons = QtWidgets.QHBoxLayout()
             login_button = QtWidgets.QPushButton("扫码登录小红书")
             check_login_button = QtWidgets.QPushButton("检测登录状态")
@@ -2899,8 +2932,11 @@ class PublishPage(QtWidgets.QWidget):
             buttons.addWidget(upload_button)
             if key == "xiaohongshu":
                 layout.addWidget(section_label("小红书登录"))
+                layout.addWidget(QtWidgets.QLabel("自动化浏览器"))
+                layout.addWidget(browser_combo)
                 layout.addWidget(login_status)
                 layout.addLayout(login_buttons)
+                layout.addWidget(auto_publish_check)
                 layout.addWidget(section_label("发布内容"))
             layout.addWidget(QtWidgets.QLabel("标题"))
             layout.addWidget(title)
@@ -2923,6 +2959,8 @@ class PublishPage(QtWidgets.QWidget):
                     check_login_button,
                     clear_login_button,
                 ),
+                "browser_combo": browser_combo,
+                "auto_publish_check": auto_publish_check,
             }
             self.tabs.addTab(page, profile.name)
         self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
@@ -3032,7 +3070,14 @@ class PublishPage(QtWidgets.QWidget):
         }
         login_status = self.platform_widgets["xiaohongshu"]["login_status"]
         login_status.setText(labels.get(action, "处理中..."))
-        self.login_thread = XiaohongshuLoginThread(action, self)
+        browser_name = self.platform_widgets["xiaohongshu"][
+            "browser_combo"
+        ].currentData()
+        self.login_thread = XiaohongshuLoginThread(
+            action,
+            str(browser_name or "edge"),
+            self,
+        )
         self.login_thread.result.connect(
             lambda success, message, action=action: self._on_login_result(
                 action,
@@ -3181,6 +3226,20 @@ class PublishPage(QtWidgets.QWidget):
         widgets = self.platform_widgets[key]
         if key == "xiaohongshu":
             draft = self._draft_by_id(self.current_draft_id)
+            xhs_widgets = self.platform_widgets["xiaohongshu"]
+            auto_publish = xhs_widgets["auto_publish_check"].isChecked()
+            if auto_publish:
+                answer = QtWidgets.QMessageBox.question(
+                    self,
+                    "确认自动发布",
+                    "你已开启自动点击最终发布。软件填写并上传完成后，"
+                    "会尝试直接发布这条小红书笔记。\n\n是否继续？",
+                    QtWidgets.QMessageBox.StandardButton.Yes
+                    | QtWidgets.QMessageBox.StandardButton.No,
+                    QtWidgets.QMessageBox.StandardButton.No,
+                )
+                if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                    return
             params = {
                 "media_paths": [str(path) for path in self.selected_media()],
                 "media_type": draft.media_type if draft else "image",
@@ -3188,6 +3247,10 @@ class PublishPage(QtWidgets.QWidget):
                 "description": widgets["description"].toPlainText().strip(),
                 "tags": post.tags,
                 "keep_open": True,
+                "browser_name": str(
+                    xhs_widgets["browser_combo"].currentData() or "edge"
+                ),
+                "auto_publish": auto_publish,
             }
         else:
             params = {

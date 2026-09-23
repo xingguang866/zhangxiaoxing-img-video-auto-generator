@@ -26,11 +26,67 @@ def edge_executable() -> Path | None:
     return None
 
 
+def chrome_executable() -> Path | None:
+    candidates = [
+        Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+        Path("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def browser_executable(browser_name: str = "edge") -> Path:
+    normalized = browser_name.strip().lower()
+    if normalized == "chrome":
+        executable = chrome_executable()
+        if executable:
+            return executable
+        raise RuntimeError("未找到 Google Chrome，请安装 Chrome 或改用 Edge。")
+    executable = edge_executable()
+    if executable:
+        return executable
+    raise RuntimeError("未找到 Microsoft Edge，请安装 Edge 或改用 Chrome。")
+
+
 def browser_profile_dir(platform_key: str) -> Path:
     root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     path = root / "ZhangXiaoxingGenerator" / "browser_profiles" / platform_key
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def terminate_platform_browser_processes(platform_key: str) -> list[int]:
+    profile = str(browser_profile_dir(platform_key)).lower()
+    terminated: list[int] = []
+    try:
+        import psutil
+    except ImportError:
+        return terminated
+    for process in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            name = str(process.info.get("name") or "").lower()
+            if name not in {"msedge.exe", "chrome.exe"}:
+                continue
+            command = " ".join(process.info.get("cmdline") or []).lower()
+            if profile not in command:
+                continue
+            process.terminate()
+            terminated.append(int(process.info["pid"]))
+        except (psutil.Error, OSError, ValueError):
+            continue
+    if terminated:
+        time.sleep(1.0)
+        for pid in terminated:
+            try:
+                process = psutil.Process(pid)
+                if process.is_running():
+                    process.kill()
+            except (psutil.Error, OSError):
+                continue
+    return terminated
 
 
 def open_platform_page(platform_key: str, url: str | None = None) -> Path:
@@ -48,17 +104,47 @@ def open_platform_page(platform_key: str, url: str | None = None) -> Path:
     return executable
 
 
-def _persistent_context(playwright, platform_key: str, *, headless: bool):
-    executable = edge_executable()
-    if not executable:
-        raise RuntimeError("未找到 Microsoft Edge，无法打开平台页面。")
-    return playwright.chromium.launch_persistent_context(
-        user_data_dir=str(browser_profile_dir(platform_key)),
-        executable_path=str(executable),
-        headless=headless,
-        accept_downloads=True,
-        viewport={"width": 1440, "height": 900},
-    )
+def _persistent_context(
+    playwright,
+    platform_key: str,
+    *,
+    headless: bool,
+    browser_name: str = "edge",
+):
+    executable = browser_executable(browser_name)
+    arguments = [
+        "--disable-features=msEdgeSidebarV2",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    try:
+        return playwright.chromium.launch_persistent_context(
+            user_data_dir=str(browser_profile_dir(platform_key)),
+            executable_path=str(executable),
+            headless=headless,
+            accept_downloads=True,
+            viewport={"width": 1440, "height": 900},
+            args=arguments,
+        )
+    except Exception as first_error:
+        terminated = terminate_platform_browser_processes(platform_key)
+        if not terminated:
+            raise RuntimeError(
+                "浏览器启动失败。请关闭该平台专用 Edge 窗口后重试。"
+            ) from first_error
+        try:
+            return playwright.chromium.launch_persistent_context(
+                user_data_dir=str(browser_profile_dir(platform_key)),
+                executable_path=str(executable),
+                headless=headless,
+                accept_downloads=True,
+                viewport={"width": 1440, "height": 900},
+                args=arguments,
+            )
+        except Exception as second_error:
+            raise RuntimeError(
+                "浏览器配置仍被其他进程占用，且自动清理失败。"
+            ) from second_error
 
 
 def _xiaohongshu_logged_in(page: Page, context: BrowserContext) -> bool:
@@ -88,9 +174,17 @@ def _xiaohongshu_logged_in(page: Page, context: BrowserContext) -> bool:
         return False
 
 
-def xiaohongshu_login_status() -> tuple[bool, str]:
+def xiaohongshu_login_status(
+    *,
+    browser_name: str = "edge",
+) -> tuple[bool, str]:
     with sync_playwright() as playwright:
-        context = _persistent_context(playwright, "xiaohongshu", headless=True)
+        context = _persistent_context(
+            playwright,
+            "xiaohongshu",
+            headless=True,
+            browser_name=browser_name,
+        )
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(
@@ -106,9 +200,18 @@ def xiaohongshu_login_status() -> tuple[bool, str]:
             context.close()
 
 
-def xiaohongshu_login(*, timeout_seconds: int = 300) -> tuple[bool, str]:
+def xiaohongshu_login(
+    *,
+    timeout_seconds: int = 300,
+    browser_name: str = "edge",
+) -> tuple[bool, str]:
     with sync_playwright() as playwright:
-        context = _persistent_context(playwright, "xiaohongshu", headless=False)
+        context = _persistent_context(
+            playwright,
+            "xiaohongshu",
+            headless=False,
+            browser_name=browser_name,
+        )
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(
@@ -130,6 +233,7 @@ def xiaohongshu_login(*, timeout_seconds: int = 300) -> tuple[bool, str]:
 
 def clear_xiaohongshu_login() -> str:
     profile = browser_profile_dir("xiaohongshu")
+    terminate_platform_browser_processes("xiaohongshu")
     try:
         shutil.rmtree(profile)
     except FileNotFoundError:
@@ -282,19 +386,27 @@ def assist_upload_xiaohongshu(
     description: str,
     tags: list[str],
     keep_open: bool = True,
+    browser_name: str = "edge",
+    auto_publish: bool = False,
 ) -> dict:
     existing = [Path(path) for path in media_paths if Path(path).exists()]
     if not existing:
         raise RuntimeError("没有可上传的图片或视频。")
 
     with sync_playwright() as playwright:
-        context = _persistent_context(playwright, "xiaohongshu", headless=False)
+        context = _persistent_context(
+            playwright,
+            "xiaohongshu",
+            headless=False,
+            browser_name=browser_name,
+        )
         result = {
             "platform": "小红书",
             "uploaded_files": 0,
             "title_filled": False,
             "description_filled": False,
             "tags_filled": False,
+            "published": False,
             "message": "",
         }
         try:
@@ -354,12 +466,32 @@ def assist_upload_xiaohongshu(
                 full_description,
             )
             result["tags_filled"] = bool(tag_text and result["description_filled"])
+            if auto_publish:
+                publish_button = _first_visible(
+                    page,
+                    [
+                        'button:has-text("发布笔记")',
+                        'button:has-text("发布")',
+                        'div[role="button"]:has-text("发布")',
+                    ],
+                )
+                if publish_button is None:
+                    raise RuntimeError(
+                        "未找到小红书最终发布按钮，页面已保留。"
+                    )
+                publish_button.click(timeout=5000)
+                page.wait_for_timeout(5000)
+                result["published"] = True
             result["message"] = (
                 "已打开小红书官方发布页。"
                 f"素材加载 {result['uploaded_files']} 个，"
                 f"标题自动填写{'完成' if result['title_filled'] else '未完成'}，"
                 f"正文和标签自动填写{'完成' if result['description_filled'] else '未完成'}。"
-                "请检查预览、图片顺序和标签后，手动点击最终发布。"
+                + (
+                    "已尝试自动点击最终发布，请在浏览器确认发布结果。"
+                    if result["published"]
+                    else "请检查预览、图片顺序和标签后，手动点击最终发布。"
+                )
             )
             if keep_open:
                 while context.pages:

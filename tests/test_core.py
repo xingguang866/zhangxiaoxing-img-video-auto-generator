@@ -106,6 +106,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(jobs[0]["size"], "3:4")
         self.assertIn("干纸猛擦VS湿厕纸轻擦", jobs[0]["prompt"])
         self.assertIn("45%至60%", jobs[0]["prompt"])
+        self.assertEqual(jobs[0]["resolution"], "1k")
         self.assertFalse(jobs[1]["is_cover"])
 
     def test_model_parameter_validation(self):
@@ -401,6 +402,12 @@ class CoreTests(unittest.TestCase):
             items = load_batch_items(template, default_style="清新治愈")
             self.assertEqual(len(items), 1)
             self.assertEqual(len(items[0].image_prompts), 4)
+            self.assertEqual(items[0].image_resolution, "720p")
+            self.assertEqual(items[0].video_resolution, "720p")
+            self.assertEqual(
+                items[0].image_resolution,
+                items[0].video_resolution,
+            )
 
     def test_jianying_draft_generation(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -737,6 +744,17 @@ class CoreTests(unittest.TestCase):
             "试听当前音色和情感",
         )
         self.assertTrue(window.hypit_page.simple_page.segment_emotion_check.isChecked())
+        self.assertEqual(
+            window.publish_page.platform_widgets["xiaohongshu"][
+                "browser_combo"
+            ].count(),
+            2,
+        )
+        self.assertFalse(
+            window.publish_page.platform_widgets["xiaohongshu"][
+                "auto_publish_check"
+            ].isChecked()
+        )
         window.publish_page._on_login_result(
             "clear",
             True,
@@ -753,6 +771,7 @@ class CoreTests(unittest.TestCase):
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["chat"]), 0)
         self.assertTrue(window.image_page.output_edit.text())
+        self.assertIn("720p", window.image_page.resolution_combo.itemText(0))
         self.assertTrue(window.image_page.cover_title_edit.placeholderText())
         self.assertEqual(window.image_page.cover_title_edit.maxLength(), 40)
         window.image_page.cover_title_edit.setText("测试封面标题超过十四个汉字需要提醒用户")
@@ -760,6 +779,14 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(window.image_page.cover_button.text(), "生成封面图")
         self.assertTrue(window.video_page.output_edit.text())
         self.assertTrue(window.batch_page.output_edit.text())
+        self.assertEqual(
+            window.batch_page.batch_image_resolution_combo.currentText(),
+            "720p",
+        )
+        self.assertEqual(
+            window.batch_page.batch_video_resolution_combo.currentText(),
+            "720p",
+        )
         test_catalog = {
             "image": [{"id": "test-image-model", "capability_tags": ["Text to Image"]}],
             "video": [{"id": "test-video-model", "capability_tags": ["Image to Video"]}],

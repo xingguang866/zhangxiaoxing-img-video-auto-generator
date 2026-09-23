@@ -19,6 +19,8 @@ class BatchItem:
     style: str = ""
     image_prompts: list[str] = field(default_factory=list)
     video_prompt: str = ""
+    image_resolution: str = ""
+    video_resolution: str = ""
     image_paths: list[Path] = field(default_factory=list)
     image_urls: list[str] = field(default_factory=list)
     video_paths: list[Path] = field(default_factory=list)
@@ -108,6 +110,15 @@ def load_batch_items(
         style = _pick(row, ("图片风格", "风格", "style")) or default_style
         prompt_text = _pick(row, ("生图提示词", "图像提示词", "图片提示词", "prompt", "image_prompt"))
         video_prompt = _pick(row, ("视频提示词", "视频prompt", "video_prompt"))
+        generic_resolution = _pick(row, ("清晰度", "resolution"))
+        image_resolution = _pick(
+            row,
+            ("图片清晰度", "image_resolution", "image_quality"),
+        ) or generic_resolution
+        video_resolution = _pick(
+            row,
+            ("视频清晰度", "video_resolution", "video_quality"),
+        ) or generic_resolution
 
         if not theme and not copy and not prompt_text:
             continue
@@ -125,6 +136,8 @@ def load_batch_items(
                 style=style,
                 image_prompts=image_prompts,
                 video_prompt=video_prompt,
+                image_resolution=image_resolution,
+                video_resolution=video_resolution,
             )
         )
     return items
@@ -135,7 +148,18 @@ def create_batch_template(path: str | Path) -> Path:
     if target.suffix.lower() == ".csv":
         with target.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
-            writer.writerow(["主题", "每张图文案", "风格", "生图提示词", "视频提示词", "标签关键词"])
+            writer.writerow(
+                [
+                    "主题",
+                    "每张图文案",
+                    "风格",
+                    "生图提示词",
+                    "视频提示词",
+                    "图片清晰度",
+                    "视频清晰度",
+                    "标签关键词",
+                ]
+            )
             writer.writerow(
                 [
                     "久坐党如厕习惯",
@@ -143,6 +167,8 @@ def create_batch_template(path: str | Path) -> Path:
                     "清新治愈",
                     "图1：标题海报；图2：手机留在门外；图3：结束点时钟；图4：轻柔清洁清单",
                     "镜头缓慢推进，纸片和图标依次出现",
+                    "720p",
+                    "720p",
                     "#肛周护理 #久坐党 #健康科普",
                 ]
             )
@@ -151,7 +177,18 @@ def create_batch_template(path: str | Path) -> Path:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "批量文案"
-    sheet.append(["主题", "每张图文案", "风格", "生图提示词", "视频提示词", "标签关键词"])
+    sheet.append(
+        [
+            "主题",
+            "每张图文案",
+            "风格",
+            "生图提示词",
+            "视频提示词",
+            "图片清晰度",
+            "视频清晰度",
+            "标签关键词",
+        ]
+    )
     sheet.append(
         [
             "久坐党如厕习惯",
@@ -159,10 +196,21 @@ def create_batch_template(path: str | Path) -> Path:
             "清新治愈",
             "图1：标题海报；图2：手机留在门外；图3：结束点时钟；图4：轻柔清洁清单",
             "镜头缓慢推进，纸片和图标依次出现",
+            "720p",
+            "720p",
             "#肛周护理 #久坐党 #健康科普",
         ]
     )
-    for column, width in {"A": 26, "B": 42, "C": 14, "D": 60, "E": 42, "F": 30}.items():
+    for column, width in {
+        "A": 26,
+        "B": 42,
+        "C": 14,
+        "D": 60,
+        "E": 42,
+        "F": 16,
+        "G": 16,
+        "H": 30,
+    }.items():
         sheet.column_dimensions[column].width = width
     workbook.save(target)
     return target
