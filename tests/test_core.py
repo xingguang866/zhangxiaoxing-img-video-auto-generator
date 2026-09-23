@@ -29,6 +29,7 @@ from browser_assistant import (
     _find_xiaohongshu_publish_button,
     _fill_field,
     _upload_files,
+    _wait_for_xiaohongshu_publish_result,
 )
 from jianying_service import create_jianying_draft
 from hypit_service import (
@@ -371,6 +372,14 @@ class CoreTests(unittest.TestCase):
                     "2026-09-30 10:30",
                 )
                 self.assertIsNotNone(_find_xiaohongshu_publish_button(page))
+                page.evaluate(
+                    """() => {
+                        const node = document.createElement("div");
+                        node.textContent = "发布成功";
+                        document.body.appendChild(node);
+                    }"""
+                )
+                self.assertTrue(_wait_for_xiaohongshu_publish_result(page))
                 browser.close()
 
     def test_mock_image_and_video_pipeline(self):

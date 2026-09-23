@@ -151,6 +151,8 @@ def _persistent_context(
 
 def _xiaohongshu_logged_in(page: Page, context: BrowserContext) -> bool:
     try:
+        if not str(page.locator("body").inner_text() or "").strip():
+            return False
         if "/login" in page.url:
             return False
         login_markers = (
@@ -188,7 +190,7 @@ def xiaohongshu_login_status(
             browser_name=browser_name,
         )
         try:
-            page = context.pages[0] if context.pages else context.new_page()
+            page = context.new_page()
             page.goto(
                 XIAOHONGSHU_PUBLISH_URL,
                 wait_until="domcontentloaded",
@@ -215,7 +217,7 @@ def xiaohongshu_login(
             browser_name=browser_name,
         )
         try:
-            page = context.pages[0] if context.pages else context.new_page()
+            page = context.new_page()
             page.goto(
                 XIAOHONGSHU_LOGIN_URL,
                 wait_until="domcontentloaded",
@@ -363,6 +365,75 @@ def _wait_for_any(
                     return locator
         page.wait_for_timeout(poll_ms)
     return None
+
+
+def _wait_for_xiaohongshu_upload_complete(
+    page: Page,
+    *,
+    media_type: str,
+    expected_count: int,
+    timeout_ms: int = 300000,
+) -> None:
+    started = time.monotonic()
+    while (time.monotonic() - started) * 1000 < timeout_ms:
+        if media_type == "video":
+            ready = page.locator("video").count() >= 1
+        else:
+            previews = page.locator(
+                'img.preivew-image, .swiper-slide img, img[src^="blob:"]'
+            ).count()
+            ready = previews >= expected_count
+        uploading = _first_visible(
+            page,
+            [
+                "text=上传中",
+                "text=正在上传",
+            ],
+        )
+        if ready and uploading is None:
+            page.wait_for_timeout(1500)
+            return
+        page.wait_for_timeout(1000)
+    raise RuntimeError("素材上传超时，页面未完成素材处理。")
+
+
+def _wait_for_xiaohongshu_publish_result(
+    page: Page,
+    *,
+    timeout_ms: int = 20000,
+) -> bool:
+    started = time.monotonic()
+    while (time.monotonic() - started) * 1000 < timeout_ms:
+        error = _first_visible(
+            page,
+            [
+                'text=请填写标题',
+                'text=请上传图片',
+                'text=请上传视频',
+                'text=请选择发布时间',
+                'text=发布失败',
+                'text=操作失败',
+                'text=内容违规',
+            ],
+        )
+        if error is not None:
+            raise RuntimeError(
+                f"小红书发布校验失败：{error.inner_text(timeout=1000).strip()}"
+            )
+        success = _first_visible(
+            page,
+            [
+                'text=发布成功',
+                'text=已发布',
+                'text=定时发布成功',
+            ],
+        )
+        if success is not None or "/publish/publish" not in page.url:
+            return True
+        page.wait_for_timeout(1000)
+    raise RuntimeError(
+        f"已点击最终发布，但没有检测到成功结果。当前页面：{page.url}"
+    )
 
 
 def _append_xiaohongshu_tags(page: Page, tags: list[str]) -> int:
@@ -556,7 +627,7 @@ def assist_upload(
             viewport={"width": 1440, "height": 900},
         )
         try:
-            page = context.pages[0] if context.pages else context.new_page()
+            page = context.new_page()
             page.goto(profile.publish_url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(3500)
 
@@ -693,7 +764,13 @@ def assist_upload_xiaohongshu(
             if result["uploaded_files"] == 0:
                 raise RuntimeError("没有找到小红书的图片或视频上传控件。")
 
-            notify("素材已提交，正在等待上传和编辑区域...")
+            notify("素材已提交，正在等待上传完成...")
+            _wait_for_xiaohongshu_upload_complete(
+                page,
+                media_type=media_type,
+                expected_count=result["uploaded_files"],
+            )
+            notify("素材上传完成，正在等待编辑区域...")
             title_input = _wait_for_any(
                 page,
                 [
@@ -757,8 +834,7 @@ def assist_upload_xiaohongshu(
                         "未找到小红书最终发布按钮，页面已保留。"
                     )
                 publish_button.click(timeout=5000)
-                page.wait_for_timeout(5000)
-                result["published"] = True
+                result["published"] = _wait_for_xiaohongshu_publish_result(page)
             result["message"] = (
                 "已打开小红书官方发布页。"
                 f"素材加载 {result['uploaded_files']} 个，"
