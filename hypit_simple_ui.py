@@ -10,8 +10,10 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from hypit_reference import (
     DEFAULT_WORKSPACE_NAME,
+    ReferenceWorkflowError,
     ReferenceProject,
     build_reference_project,
+    normalize_reference_url,
     reference_workspace,
     run_reference_workflow,
 )
@@ -317,6 +319,13 @@ class HypitSimplePage(QtWidgets.QWidget):
         if not source_file and not source_url:
             QtWidgets.QMessageBox.warning(self, "缺少参考视频", "请填写视频链接或选择本地视频。")
             return
+        if source_url and not source_file:
+            try:
+                source_url = normalize_reference_url(source_url)
+            except ReferenceWorkflowError as exc:
+                QtWidgets.QMessageBox.warning(self, "视频链接格式不正确", str(exc))
+                return
+            self.source_url_edit.setText(source_url)
         values = self.main_window.settings_store.as_dict()
         if values["api_key"] and not values["mock_mode"]:
             answer = QtWidgets.QMessageBox.question(

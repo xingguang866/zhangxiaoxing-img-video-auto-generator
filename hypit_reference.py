@@ -57,6 +57,36 @@ def _safe_name(value: str, fallback: str = "参考视频") -> str:
     return (cleaned or fallback)[:60]
 
 
+def normalize_reference_url(value: str) -> str:
+    text = value.strip()
+    if not text:
+        raise ReferenceWorkflowError("请粘贴视频链接，或者选择本地视频。")
+
+    match = re.search(r"https?://[^\s<>\"']+", text, flags=re.IGNORECASE)
+    if match:
+        candidate = match.group(0)
+    else:
+        first = text.split(maxsplit=1)[0]
+        candidate = first
+        if re.match(
+            r"^(?:www\.|m\.|v\.|[a-z0-9-]+\.)[a-z0-9.-]+\.[a-z]{2,}/",
+            candidate,
+            flags=re.IGNORECASE,
+        ):
+            candidate = f"https://{candidate}"
+        else:
+            raise ReferenceWorkflowError(
+                "没有识别到有效视频链接。请粘贴以 http:// 或 https:// 开头的完整链接。"
+            )
+
+    candidate = candidate.rstrip("，。！？；、,.!?;)]}\"'")
+    if not re.match(r"^https?://", candidate, flags=re.IGNORECASE):
+        raise ReferenceWorkflowError(
+            "视频链接格式不正确，请使用以 http:// 或 https:// 开头的完整链接。"
+        )
+    return candidate
+
+
 def reference_workspace(name: str = DEFAULT_WORKSPACE_NAME) -> Path:
     workspace = HYPIT_PROJECTS / _safe_name(name, "张小星Hypit工作台")
     workspace.mkdir(parents=True, exist_ok=True)
@@ -164,6 +194,7 @@ def resolve_reference_video(
 
     if not source_url:
         raise ReferenceWorkflowError("请填写视频链接或选择本地 MP4 文件。")
+    source_url = normalize_reference_url(source_url)
 
     notify("正在准备视频下载组件...")
     prepare = run_hypit(["media", "prepare-fetch"], cwd=workspace, timeout=1800)

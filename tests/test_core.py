@@ -28,8 +28,10 @@ from hypit_service import (
     run_hypit,
 )
 from hypit_reference import (
+    ReferenceWorkflowError,
     align_duration_to_frame,
     heuristic_analysis,
+    normalize_reference_url,
     reference_workspace,
     run_reference_workflow,
 )
@@ -297,6 +299,18 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(align_duration_to_frame(44.033), 44.0)
         self.assertEqual(align_duration_to_frame(44.034), 44.03333333333333)
         self.assertEqual(align_duration_to_frame(0.01), 1 / 30)
+
+    def test_hypit_reference_url_normalization(self):
+        self.assertEqual(
+            normalize_reference_url("复制这段链接 https://v.douyin.com/abc123/ 打开抖音"),
+            "https://v.douyin.com/abc123/",
+        )
+        self.assertEqual(
+            normalize_reference_url("v.douyin.com/abc123/"),
+            "https://v.douyin.com/abc123/",
+        )
+        with self.assertRaises(ReferenceWorkflowError):
+            normalize_reference_url("这是一段没有链接的分享文案")
 
     def test_hypit_reference_project_generation(self):
         workspace_name = f"unittest_reference_{os.getpid()}"
