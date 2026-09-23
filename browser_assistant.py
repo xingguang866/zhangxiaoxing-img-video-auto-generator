@@ -342,6 +342,52 @@ def _wait_for_any(
     return None
 
 
+def _append_xiaohongshu_tags(page: Page, tags: list[str]) -> int:
+    clean_tags = [tag.strip().lstrip("#") for tag in tags if tag.strip().lstrip("#")]
+    if not clean_tags:
+        return 0
+    editor = _wait_for_any(
+        page,
+        [
+            'div.tiptap[contenteditable="true"]',
+            '[contenteditable="true"]',
+        ],
+        timeout_ms=10000,
+    )
+    if editor is None:
+        return 0
+    try:
+        editor.click(timeout=3000)
+        page.keyboard.press("Control+End")
+        page.keyboard.press("Enter")
+        inserted = 0
+        for tag in clean_tags:
+            before_count = editor.locator("a.tiptap-topic").count()
+            page.keyboard.type(f"#{tag}", delay=30)
+            page.wait_for_timeout(1200)
+            options = page.locator("span.name")
+            selected = False
+            for index in range(min(options.count(), 80)):
+                option = options.nth(index)
+                try:
+                    if (option.inner_text(timeout=300) or "").strip() == f"#{tag}":
+                        option.locator("xpath=..").click(timeout=3000)
+                        selected = True
+                        break
+                except Exception:
+                    continue
+            if not selected:
+                page.keyboard.press("Enter")
+            page.wait_for_timeout(300)
+            page.keyboard.press("Space")
+            page.wait_for_timeout(300)
+            if editor.locator("a.tiptap-topic").count() > before_count:
+                inserted += 1
+        return inserted
+    except Exception:
+        return 0
+
+
 def assist_upload(
     *,
     platform_key: str,
@@ -530,10 +576,6 @@ def assist_upload_xiaohongshu(
                 ],
                 title,
             )
-            full_description = description
-            tag_text = " ".join(f"#{tag.lstrip('#')}" for tag in tags if tag.strip())
-            if tag_text:
-                full_description = f"{full_description}\n\n{tag_text}".strip()
             result["description_filled"] = _fill_field(
                 page,
                 [
@@ -543,9 +585,12 @@ def assist_upload_xiaohongshu(
                     'div[contenteditable="true"]',
                     '[contenteditable="true"]',
                 ],
-                full_description,
+                description,
             )
-            result["tags_filled"] = bool(tag_text and result["description_filled"])
+            inserted_tags = _append_xiaohongshu_tags(page, tags)
+            result["tags_filled"] = inserted_tags == len(
+                [tag for tag in tags if tag.strip()]
+            )
             if auto_publish:
                 publish_button = _first_visible(
                     page,
@@ -566,7 +611,8 @@ def assist_upload_xiaohongshu(
                 "已打开小红书官方发布页。"
                 f"素材加载 {result['uploaded_files']} 个，"
                 f"标题自动填写{'完成' if result['title_filled'] else '未完成'}，"
-                f"正文和标签自动填写{'完成' if result['description_filled'] else '未完成'}。"
+                f"正文自动填写{'完成' if result['description_filled'] else '未完成'}，"
+                f"话题标签写入 {inserted_tags}/{len(tags)}。"
                 + (
                     "已尝试自动点击最终发布，请在浏览器确认发布结果。"
                     if result["published"]
