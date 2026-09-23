@@ -27,7 +27,10 @@ from hypit_service import environment, run_hypit
 
 ProgressCallback = Callable[[str], None]
 TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd", "fishaudio-tts"]
-TTS_VOICES = ["alloy", "coral", "nova", "shimmer", "echo", "fable", "onyx", "verse", "ballad", "ash", "sage"]
+TTS_VOICES = ["nova", "shimmer", "coral", "sage", "alloy", "echo", "fable", "onyx", "verse", "ballad", "ash"]
+EMOTION_STYLES = ["亲切科普", "专业讲解", "温暖治愈", "有活力", "强钩子", "沉稳提醒"]
+EMOTION_INTENSITIES = ["自然", "明显", "强烈"]
+PAUSE_STYLES = {"短停顿": 120, "标准停顿": 250, "长停顿": 450}
 
 
 @dataclass(slots=True)
@@ -39,8 +42,13 @@ class RewriteOptions:
     remove_ai_flavor: bool = True
     remove_promotional: bool = True
     tts_model: str = "gpt-4o-mini-tts"
-    voice: str = "alloy"
+    voice: str = "nova"
     language: str = "zh"
+    emotion_style: str = "亲切科普"
+    emotion_intensity: str = "明显"
+    speech_speed: float = 1.0
+    pause_style: str = "标准停顿"
+    segment_emotion: bool = True
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -219,7 +227,50 @@ def _split_text(text: str, limit: int = 3500) -> list[str]:
     return chunks or [text.strip()]
 
 
-def _concat_wav_files(parts: list[Path], destination: Path) -> Path:
+def emotion_instruction(
+    style: str,
+    intensity: str,
+    *,
+    position: int = 0,
+    total: int = 1,
+    intent: str = "",
+) -> str:
+    style_map = {
+        "亲切科普": "用温暖、亲切、容易听懂的中文科普口吻，像在和观众面对面聊天。",
+        "专业讲解": "用清晰、可信、专业但不过度严肃的中文讲解口吻。",
+        "温暖治愈": "用柔和、舒缓、有陪伴感的中文口吻，避免压迫感。",
+        "有活力": "用有精神、有感染力、节奏自然的中文口播，重点句要有起伏。",
+        "强钩子": "用有悬念和抓力的中文开场，前两句明显加快注意力，但保持可信。",
+        "沉稳提醒": "用沉稳、认真、有责任感的语气，提醒风险时适当放慢并加重。",
+    }
+    intensity_map = {
+        "自然": "情绪自然，不要夸张。",
+        "明显": "情绪清楚可感知，重点句加重并适当停顿。",
+        "强烈": "情绪表现明显，段落起伏更大，但不要像广告叫卖。",
+    }
+    parts = [
+        style_map.get(style, style_map["亲切科普"]),
+        intensity_map.get(intensity, intensity_map["明显"]),
+    ]
+    if position == 0 and total > 1:
+        parts.append("这是开头，要尽快抓住注意力，最后半句稍作停顿。")
+    elif position == total - 1 and total > 1:
+        parts.append("这是结尾，语气放缓，最后自然收束并给观众留下互动空间。")
+    if any(token in intent for token in ("问题", "风险", "错误", "危害")):
+        parts.append("讲到问题和风险时更认真，关键结论放慢。")
+    if any(token in intent for token in ("方法", "步骤", "建议", "操作")):
+        parts.append("讲方法和步骤时保持清晰，每一点之间留出短停顿。")
+    if any(token in intent for token in ("结论", "总结", "提醒")):
+        parts.append("结论句放慢，并提高关键信息的清晰度。")
+    return "".join(parts)
+
+
+def _concat_wav_files(
+    parts: list[Path],
+    destination: Path,
+    *,
+    pause_ms: int = 0,
+) -> Path:
     if len(parts) == 1:
         shutil.copy2(parts[0], destination)
         return destination
@@ -229,11 +280,24 @@ def _concat_wav_files(parts: list[Path], destination: Path) -> Path:
     arguments = [info.ffmpeg, "-y"]
     for path in parts:
         arguments.extend(["-i", str(path)])
-    streams = "".join(f"[{index}:a]" for index in range(len(parts)))
+    filters: list[str] = []
+    streams: list[str] = []
+    pause_seconds = max(0, pause_ms) / 1000
+    for index in range(len(parts)):
+        if pause_seconds and index < len(parts) - 1:
+            label = f"p{index}"
+            filters.append(
+                f"[{index}:a]apad=pad_dur={pause_seconds:.3f}[{label}]"
+            )
+            streams.append(f"[{label}]")
+        else:
+            streams.append(f"[{index}:a]")
+    concat_filter = "".join(streams) + f"concat=n={len(parts)}:v=0:a=1[out]"
+    filter_complex = ";".join([*filters, concat_filter])
     arguments.extend(
         [
             "-filter_complex",
-            f"{streams}concat=n={len(parts)}:v=0:a=1[out]",
+            filter_complex,
             "-map",
             "[out]",
             "-c:a",
@@ -259,7 +323,7 @@ def _concat_wav_files(parts: list[Path], destination: Path) -> Path:
 
 def synthesize_voiceover(
     project: ReferenceProject,
-    script: str,
+    rewrite: dict[str, Any],
     options: RewriteOptions,
     *,
     destination: Path,
@@ -306,24 +370,111 @@ def synthesize_voiceover(
             raise ReferenceWorkflowError(result.stderr.strip() or "演示配音生成失败。")
         return destination
 
-    chunks = _split_text(script)
+    script = str(rewrite.get("full_script") or "").strip()
+    segment_items = [
+        item
+        for item in (rewrite.get("segments") or [])
+        if isinstance(item, dict) and str(item.get("rewritten") or "").strip()
+    ]
+    if options.segment_emotion and segment_items:
+        chunks = [
+            (str(item.get("rewritten") or "").strip(), str(item.get("intent") or ""))
+            for item in segment_items
+        ]
+    else:
+        chunks = [(chunk, "") for chunk in _split_text(script)]
     parts: list[Path] = []
     client = APIMartClient(APIConfig(base_url=base_url, api_key=api_key))
-    for index, chunk in enumerate(chunks, start=1):
+    for index, (chunk, intent) in enumerate(chunks, start=1):
         notify(f"正在生成配音 {index}/{len(chunks)}...")
+        instructions = emotion_instruction(
+            options.emotion_style,
+            options.emotion_intensity,
+            position=index - 1,
+            total=len(chunks),
+            intent=intent,
+        )
         content = client.synthesize_speech(
             text=chunk,
             model=options.tts_model,
             voice=options.voice,
             response_format="wav",
+            speed=options.speech_speed,
+            instructions=instructions,
         )
         part = destination.parent / f"voice_part_{index:02d}.wav"
         part.write_bytes(content)
         parts.append(part)
-    _concat_wav_files(parts, destination)
+    _concat_wav_files(
+        parts,
+        destination,
+        pause_ms=PAUSE_STYLES.get(options.pause_style, 250),
+    )
     for part in parts:
         part.unlink(missing_ok=True)
     return destination
+
+
+def synthesize_voice_preview(
+    text: str,
+    options: RewriteOptions,
+    *,
+    destination: Path,
+    api_key: str,
+    base_url: str,
+    mock_mode: bool,
+    progress: ProgressCallback | None = None,
+) -> tuple[Path, str]:
+    notify = progress or (lambda _message: None)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if mock_mode or not api_key.strip():
+        info = environment()
+        if not info.ffmpeg:
+            raise ReferenceWorkflowError("未找到 FFmpeg，无法生成演示试听。")
+        result = subprocess.run(
+            [
+                info.ffmpeg,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=48000:cl=mono",
+                "-t",
+                "2",
+                "-c:a",
+                "pcm_s16le",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            shell=False,
+        )
+        if result.returncode != 0:
+            raise ReferenceWorkflowError(result.stderr.strip() or "演示试听生成失败。")
+        return destination, "演示模式没有调用 TTS，当前试听文件为静音占位。"
+
+    notify("正在生成音色试听...")
+    instructions = emotion_instruction(
+        options.emotion_style,
+        options.emotion_intensity,
+        position=0,
+        total=2,
+        intent="开头钩子",
+    )
+    client = APIMartClient(APIConfig(base_url=base_url, api_key=api_key))
+    content = client.synthesize_speech(
+        text=text.strip() or "这里是音色试听，欢迎继续了解肛周健康护理。",
+        model=options.tts_model,
+        voice=options.voice,
+        response_format="wav",
+        speed=options.speech_speed,
+        instructions=instructions,
+    )
+    destination.write_bytes(content)
+    return destination, "试听生成完成。"
 
 
 def _probe_media(path: Path) -> dict[str, Any]:
@@ -661,7 +812,7 @@ def run_originality_workflow(
     try:
         voiceover = synthesize_voiceover(
             project,
-            str(rewrite.get("full_script") or ""),
+            rewrite,
             options,
             destination=destination,
             api_key=api_key,

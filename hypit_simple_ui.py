@@ -5,6 +5,12 @@ import threading
 import webbrowser
 from html import escape
 from pathlib import Path
+from datetime import datetime
+
+try:
+    import winsound
+except ImportError:  # pragma: no cover - Windows application fallback
+    winsound = None
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -18,10 +24,14 @@ from hypit_reference import (
     run_reference_workflow,
 )
 from hypit_rewrite import (
+    EMOTION_INTENSITIES,
+    EMOTION_STYLES,
+    PAUSE_STYLES,
     TTS_MODELS,
     TTS_VOICES,
     RewriteOptions,
     run_originality_workflow,
+    synthesize_voice_preview,
 )
 from hypit_service import start_hypit_process
 
@@ -161,6 +171,46 @@ class ReferenceRewriteThread(QtCore.QThread):
             self.failed.emit(str(exc))
 
 
+class VoicePreviewThread(QtCore.QThread):
+    progress = QtCore.Signal(str)
+    completed = QtCore.Signal(str, str)
+    failed = QtCore.Signal(str)
+
+    def __init__(
+        self,
+        text: str,
+        options: RewriteOptions,
+        *,
+        api_key: str,
+        base_url: str,
+        mock_mode: bool,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.text = text
+        self.options = options
+        self.api_key = api_key
+        self.base_url = base_url
+        self.mock_mode = mock_mode
+
+    def run(self) -> None:
+        try:
+            preview_dir = reference_workspace() / "previews"
+            destination = preview_dir / f"voice_preview_{datetime.now():%Y%m%d_%H%M%S}.wav"
+            path, message = synthesize_voice_preview(
+                self.text,
+                self.options,
+                destination=destination,
+                api_key=self.api_key,
+                base_url=self.base_url,
+                mock_mode=self.mock_mode,
+                progress=self.progress.emit,
+            )
+            self.completed.emit(str(path), message)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class HypitSimplePage(QtWidgets.QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -169,6 +219,7 @@ class HypitSimplePage(QtWidgets.QWidget):
         self.source_project: ReferenceProject | None = None
         self.workflow_thread: ReferenceWorkflowThread | None = None
         self.rewrite_thread: ReferenceRewriteThread | None = None
+        self.preview_thread: VoicePreviewThread | None = None
         self.build_thread: ReferenceBuildThread | None = None
         self.studio_process = None
         self.setAcceptDrops(True)
@@ -272,13 +323,51 @@ class HypitSimplePage(QtWidgets.QWidget):
         self.voice_combo = QtWidgets.QComboBox()
         self.voice_combo.setEditable(True)
         self.voice_combo.addItems(TTS_VOICES)
+        self.voice_combo.setCurrentText("nova")
+        self.voice_combo.setToolTip(
+            "Nova、Shimmer、Coral、Sage 更偏女声；建议先试听再生成完整配音。"
+        )
+        self.emotion_style_combo = QtWidgets.QComboBox()
+        self.emotion_style_combo.addItems(EMOTION_STYLES)
+        self.emotion_intensity_combo = QtWidgets.QComboBox()
+        self.emotion_intensity_combo.addItems(EMOTION_INTENSITIES)
+        self.emotion_intensity_combo.setCurrentText("明显")
+        self.speed_spin = QtWidgets.QDoubleSpinBox()
+        self.speed_spin.setRange(0.85, 1.15)
+        self.speed_spin.setSingleStep(0.05)
+        self.speed_spin.setValue(1.0)
+        self.speed_spin.setDecimals(2)
+        self.pause_combo = QtWidgets.QComboBox()
+        self.pause_combo.addItems(list(PAUSE_STYLES))
+        self.pause_combo.setCurrentText("标准停顿")
+        self.segment_emotion_check = QtWidgets.QCheckBox("启用分段情绪控制")
+        self.segment_emotion_check.setChecked(True)
         voice_options.addWidget(QtWidgets.QLabel("配音模型（默认 gpt-4o-mini-tts）"), 0, 0)
         voice_options.addWidget(QtWidgets.QLabel("配音音色"), 0, 1)
+        voice_options.addWidget(QtWidgets.QLabel("朗读风格"), 0, 2)
         voice_options.addWidget(self.tts_model_combo, 1, 0)
         voice_options.addWidget(self.voice_combo, 1, 1)
+        voice_options.addWidget(self.emotion_style_combo, 1, 2)
+        voice_options.addWidget(QtWidgets.QLabel("情绪强度"), 2, 0)
+        voice_options.addWidget(QtWidgets.QLabel("语速"), 2, 1)
+        voice_options.addWidget(QtWidgets.QLabel("段间停顿"), 2, 2)
+        voice_options.addWidget(self.emotion_intensity_combo, 3, 0)
+        voice_options.addWidget(self.speed_spin, 3, 1)
+        voice_options.addWidget(self.pause_combo, 3, 2)
         voice_options.setColumnStretch(0, 1)
         voice_options.setColumnStretch(1, 1)
+        voice_options.setColumnStretch(2, 1)
         step_two.addLayout(voice_options)
+        preview_row = QtWidgets.QHBoxLayout()
+        preview_row.addWidget(self.segment_emotion_check)
+        self.preview_button = QtWidgets.QPushButton("试听当前音色和情感")
+        self.preview_button.setObjectName("secondaryButton")
+        self.preview_button.clicked.connect(self.preview_voice)
+        preview_row.addWidget(self.preview_button)
+        preview_row.addStretch(1)
+        step_two.addLayout(preview_row)
+        self.preview_status = _muted("建议先生成短句试听，再生成完整配音。")
+        step_two.addWidget(self.preview_status)
         self.set_models(self.main_window.model_catalog)
 
         self.rewrite_button = QtWidgets.QPushButton("按创作目标生成原创口播")
@@ -679,6 +768,72 @@ class HypitSimplePage(QtWidgets.QWidget):
         )
         self.build_thread.start()
 
+    def preview_voice(self) -> None:
+        if self.preview_thread and self.preview_thread.isRunning():
+            return
+        values = self.main_window.settings_store.as_dict()
+        if values["api_key"] and not values["mock_mode"]:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "确认 API 费用",
+                "音色试听会调用一次 TTS，可能产生少量 API 费用。是否继续？",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.Yes,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        options = RewriteOptions(
+            model=self.analysis_model_combo.currentText().strip(),
+            target_title=self.target_title_edit.text().strip(),
+            target_hook=self.target_hook_edit.text().strip(),
+            originality_level=self.originality_combo.currentText(),
+            remove_ai_flavor=self.remove_ai_check.isChecked(),
+            remove_promotional=self.remove_promo_check.isChecked(),
+            tts_model=self.tts_model_combo.currentText().strip() or "gpt-4o-mini-tts",
+            voice=self.voice_combo.currentText().strip() or "nova",
+            language=LANGUAGE_OPTIONS.get(self.language_combo.currentText(), "zh"),
+            emotion_style=self.emotion_style_combo.currentText(),
+            emotion_intensity=self.emotion_intensity_combo.currentText(),
+            speech_speed=self.speed_spin.value(),
+            pause_style=self.pause_combo.currentText(),
+            segment_emotion=self.segment_emotion_check.isChecked(),
+        )
+        preview_text = options.target_hook or "这里是音色试听，欢迎继续了解肛周健康护理。"
+        self.preview_button.setEnabled(False)
+        self.preview_status.setText("正在生成音色试听...")
+        self.preview_thread = VoicePreviewThread(
+            preview_text,
+            options,
+            api_key=values["api_key"],
+            base_url=values["base_url"],
+            mock_mode=bool(values["mock_mode"]),
+            parent=self,
+        )
+        self.preview_thread.progress.connect(self.preview_status.setText)
+        self.preview_thread.completed.connect(self._on_preview_completed)
+        self.preview_thread.failed.connect(self._on_preview_failed)
+        self.preview_thread.finished.connect(
+            lambda thread=self.preview_thread: self._clear_preview_thread(thread)
+        )
+        self.preview_thread.start()
+
+    def _clear_preview_thread(self, thread) -> None:
+        if self.preview_thread is thread:
+            self.preview_thread = None
+        self.preview_button.setEnabled(True)
+
+    def _on_preview_completed(self, path: str, message: str) -> None:
+        self.preview_status.setText(message)
+        if winsound:
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        else:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
+
+    def _on_preview_failed(self, message: str) -> None:
+        self.preview_status.setText(f"试听失败：{message}")
+        QtWidgets.QMessageBox.critical(self, "音色试听失败", message)
+
     def start_rewrite(self) -> None:
         if not self.source_project:
             QtWidgets.QMessageBox.warning(self, "缺少参考工程", "请先生成参考视频工程。")
@@ -722,8 +877,13 @@ class HypitSimplePage(QtWidgets.QWidget):
             remove_ai_flavor=self.remove_ai_check.isChecked(),
             remove_promotional=self.remove_promo_check.isChecked(),
             tts_model=self.tts_model_combo.currentText().strip() or "gpt-4o-mini-tts",
-            voice=self.voice_combo.currentText().strip() or "alloy",
+            voice=self.voice_combo.currentText().strip() or "nova",
             language=LANGUAGE_OPTIONS.get(self.language_combo.currentText(), "zh"),
+            emotion_style=self.emotion_style_combo.currentText(),
+            emotion_intensity=self.emotion_intensity_combo.currentText(),
+            speech_speed=self.speed_spin.value(),
+            pause_style=self.pause_combo.currentText(),
+            segment_emotion=self.segment_emotion_check.isChecked(),
         )
         self.rewrite_button.setEnabled(False)
         self.progress.setVisible(True)

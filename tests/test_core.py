@@ -42,7 +42,11 @@ from hypit_reference import (
     run_reference_workflow,
     select_best_browser_media,
 )
-from hypit_rewrite import RewriteOptions, run_originality_workflow
+from hypit_rewrite import (
+    RewriteOptions,
+    emotion_instruction,
+    run_originality_workflow,
+)
 from hypit_tutorial import ASSET_DIR, build_tutorial_html
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_pricing, format_usage
@@ -185,11 +189,38 @@ class CoreTests(unittest.TestCase):
             model="gpt-4o-mini-tts",
             voice="alloy",
             response_format="wav",
+            speed=1.05,
+            instructions="温柔、有感情地朗读。",
         )
         self.assertEqual(content, b"RIFFtest")
         self.assertTrue(captured["url"].endswith("/audio/speech"))
         self.assertEqual(captured["kwargs"]["json"]["input"], "测试配音")
         self.assertEqual(captured["kwargs"]["json"]["prompt"], "测试配音")
+        self.assertEqual(captured["kwargs"]["json"]["speed"], 1.05)
+        self.assertEqual(
+            captured["kwargs"]["json"]["instructions"],
+            "温柔、有感情地朗读。",
+        )
+
+    def test_emotion_instruction_uses_position_and_intent(self):
+        opening = emotion_instruction(
+            "强钩子",
+            "明显",
+            position=0,
+            total=3,
+            intent="问题引入",
+        )
+        conclusion = emotion_instruction(
+            "温暖治愈",
+            "强烈",
+            position=2,
+            total=3,
+            intent="总结和提醒",
+        )
+        self.assertIn("抓住注意力", opening)
+        self.assertIn("问题和风险", opening)
+        self.assertIn("结尾", conclusion)
+        self.assertIn("结论句", conclusion)
 
     def test_pricing_formatting(self):
         token_pricing = {
@@ -603,6 +634,15 @@ class CoreTests(unittest.TestCase):
         )
         self.assertTrue(window.hypit_page.simple_page.target_title_edit.placeholderText())
         self.assertTrue(window.hypit_page.simple_page.target_hook_edit.placeholderText())
+        self.assertEqual(
+            window.hypit_page.simple_page.voice_combo.currentText(),
+            "nova",
+        )
+        self.assertEqual(
+            window.hypit_page.simple_page.preview_button.text(),
+            "试听当前音色和情感",
+        )
+        self.assertTrue(window.hypit_page.simple_page.segment_emotion_check.isChecked())
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["image"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["video"]), 0)
         self.assertGreater(len(FALLBACK_MODEL_CATALOG["audio"]), 0)

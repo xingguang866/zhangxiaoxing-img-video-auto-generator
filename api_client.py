@@ -346,21 +346,25 @@ class APIMartClient:
         voice: str = "alloy",
         response_format: str = "wav",
         speed: float = 1.0,
+        instructions: str = "",
     ) -> bytes:
         if not text.strip():
             raise APIClientError("配音文本为空。")
+        payload = {
+            "model": model,
+            "input": text.strip(),
+            "prompt": text.strip(),
+            "voice": voice,
+            "response_format": response_format,
+            "speed": speed,
+        }
+        if instructions.strip():
+            payload["instructions"] = instructions.strip()
         try:
             response = self.session.post(
                 self._url("/audio/speech"),
                 headers=self._headers(json_body=True),
-                json={
-                    "model": model,
-                    "input": text.strip(),
-                    "prompt": text.strip(),
-                    "voice": voice,
-                    "response_format": response_format,
-                    "speed": speed,
-                },
+                json=payload,
                 timeout=max(self.config.timeout, 600),
             )
         except requests.RequestException as exc:
