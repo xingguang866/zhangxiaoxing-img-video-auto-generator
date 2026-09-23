@@ -4,6 +4,8 @@ import copy
 import os
 import re
 import sys
+import threading
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,7 +28,6 @@ from hypit_service import (
     install_ffmpeg_tools,
     install_hypit_cli,
     initialize_project as hypit_initialize_project,
-    launch_hypit_studio,
     login_apib_credential,
     run_hypit,
     start_hypit_process,
@@ -2141,6 +2142,7 @@ class HypitPage(QtWidgets.QWidget):
         self.setup_thread: HypitSetupThread | None = None
         self.initialize_thread: HypitInitializeThread | None = None
         self.apib_thread: HypitApibSetupThread | None = None
+        self.studio_process = None
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -2559,10 +2561,29 @@ class HypitPage(QtWidgets.QWidget):
         if not svrun:
             return
         try:
-            launch_hypit_studio(["--run", svrun], cwd=self.project_path_edit.text().strip())
-            self.append_log("Hypit Studio 已启动。")
+            self.studio_process = start_hypit_process(
+                ["studio", "--run", svrun],
+                cwd=self.project_path_edit.text().strip(),
+            )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Studio 启动失败", str(exc))
+            return
+        self.append_log("Hypit Studio 正在启动，浏览器将自动打开实际网址。")
+        threading.Thread(
+            target=self._wait_for_studio_url,
+            args=(self.studio_process,),
+            daemon=True,
+        ).start()
+
+    def _wait_for_studio_url(self, process) -> None:
+        if not process.stdout:
+            return
+        for raw_line in process.stdout:
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", raw_line)
+            match = re.search(r"https?://[^\s]+", clean)
+            if match:
+                webbrowser.open(match.group(0).rstrip(".,;)"))
+                return
 
 
 class PublishAssistThread(QtCore.QThread):
