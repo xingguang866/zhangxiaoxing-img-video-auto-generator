@@ -2741,6 +2741,7 @@ class HypitPage(QtWidgets.QWidget):
 
 
 class PublishAssistThread(QtCore.QThread):
+    progress = QtCore.Signal(str)
     result = QtCore.Signal(dict)
     error = QtCore.Signal(str)
 
@@ -2751,7 +2752,12 @@ class PublishAssistThread(QtCore.QThread):
     def run(self) -> None:
         try:
             if "media_type" in self.params and "tags" in self.params:
-                self.result.emit(assist_upload_xiaohongshu(**self.params))
+                self.result.emit(
+                    assist_upload_xiaohongshu(
+                        **self.params,
+                        progress=self.progress.emit,
+                    )
+                )
             else:
                 self.result.emit(assist_upload(**self.params))
         except Exception as exc:
@@ -3262,6 +3268,7 @@ class PublishPage(QtWidgets.QWidget):
             }
         self.status_label.setText(f"正在打开{PLATFORMS[key].name}并尝试上传，最终发布请手动点击")
         self.assist_thread = PublishAssistThread(params, self)
+        self.assist_thread.progress.connect(self.status_label.setText)
         self.assist_thread.result.connect(self._on_assist_result)
         self.assist_thread.error.connect(self._on_assist_error)
         self.assist_thread.finished.connect(
@@ -3278,6 +3285,11 @@ class PublishPage(QtWidgets.QWidget):
         QtWidgets.QMessageBox.information(self, "辅助上传完成", result.get("message", ""))
 
     def _on_assist_error(self, message: str) -> None:
+        if "Target page, context or browser has been closed" in message:
+            message = (
+                "浏览器页面或窗口已经被关闭，辅助上传已取消。"
+                "请重新点击“辅助上传”，并在软件完成操作前不要关闭浏览器。"
+            )
         self.status_label.setText(f"辅助上传失败：{message}")
         QtWidgets.QMessageBox.critical(self, "辅助上传失败", message)
 

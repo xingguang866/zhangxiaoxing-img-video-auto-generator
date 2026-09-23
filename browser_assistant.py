@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from playwright.sync_api import BrowserContext, Page, sync_playwright
@@ -272,7 +273,12 @@ def _fill_field(page: Page, selectors: list[str], value: str) -> bool:
             return False
 
 
-def _upload_files(page: Page, media_paths: list[str | Path]) -> int:
+def _upload_files(
+    page: Page,
+    media_paths: list[str | Path],
+    *,
+    accept_contains: str = "",
+) -> int:
     paths = [str(Path(path)) for path in media_paths if Path(path).exists()]
     if not paths:
         return 0
@@ -285,6 +291,9 @@ def _upload_files(page: Page, media_paths: list[str | Path]) -> int:
     for index in range(count):
         locator = inputs.nth(index)
         try:
+            accept = str(locator.get_attribute("accept") or "").lower()
+            if accept_contains and accept_contains.lower() not in accept:
+                continue
             multiple = locator.get_attribute("multiple")
             if multiple is not None:
                 locator.set_input_files(paths, timeout=5000)
@@ -297,11 +306,40 @@ def _upload_files(page: Page, media_paths: list[str | Path]) -> int:
 
     if count:
         try:
-            inputs.first.set_input_files(paths[0], timeout=5000)
-            return 1
+            for index in range(count):
+                locator = inputs.nth(index)
+                if accept_contains:
+                    accept = str(locator.get_attribute("accept") or "").lower()
+                    if accept_contains.lower() not in accept:
+                        continue
+                locator.set_input_files(paths[0], timeout=5000)
+                return 1
         except Exception:
             return 0
     return 0
+
+
+def _wait_for_any(
+    page: Page,
+    selectors: list[str],
+    *,
+    timeout_ms: int,
+    poll_ms: int = 500,
+    require_visible: bool = True,
+):
+    started = time.monotonic()
+    while (time.monotonic() - started) * 1000 < timeout_ms:
+        if require_visible:
+            locator = _first_visible(page, selectors)
+            if locator is not None:
+                return locator
+        else:
+            for selector in selectors:
+                locator = page.locator(selector).first
+                if locator.count():
+                    return locator
+        page.wait_for_timeout(poll_ms)
+    return None
 
 
 def assist_upload(
@@ -388,7 +426,9 @@ def assist_upload_xiaohongshu(
     keep_open: bool = True,
     browser_name: str = "edge",
     auto_publish: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> dict:
+    notify = progress or (lambda _message: None)
     existing = [Path(path) for path in media_paths if Path(path).exists()]
     if not existing:
         raise RuntimeError("没有可上传的图片或视频。")
@@ -411,6 +451,7 @@ def assist_upload_xiaohongshu(
         }
         try:
             page = context.pages[0] if context.pages else context.new_page()
+            notify("正在打开小红书官方发布页...")
             page.goto(
                 XIAOHONGSHU_PUBLISH_URL,
                 wait_until="domcontentloaded",
@@ -421,26 +462,65 @@ def assist_upload_xiaohongshu(
                 raise RuntimeError("小红书未登录，请先点击“扫码登录小红书”。")
 
             mode_text = "上传视频" if media_type == "video" else "上传图文"
-            mode_button = _first_visible(
-                page,
-                [
-                    f'text={mode_text}',
-                    f'button:has-text("{mode_text}")',
-                    f'div[role="tab"]:has-text("{mode_text}")',
-                ],
-            )
+            notify(f"正在切换{mode_text}模式...")
+            mode_button = page.locator('.creator-tab').filter(
+                has_text=mode_text
+            ).last
+            if mode_button.count() == 0:
+                mode_button = _first_visible(
+                    page,
+                    [
+                        f'button:has-text("{mode_text}")',
+                        f'div[role="tab"]:has-text("{mode_text}")',
+                    ],
+                )
             if mode_button is not None:
                 try:
+                    mode_button.scroll_into_view_if_needed(timeout=3000)
                     mode_button.click(timeout=3000)
-                    page.wait_for_timeout(1200)
+                    page.wait_for_timeout(1500)
                 except Exception:
                     pass
 
-            result["uploaded_files"] = _upload_files(page, existing)
+            accept_filter = ".mp4" if media_type == "video" else ".jpg"
+            input_ready = _wait_for_any(
+                page,
+                [
+                    f'input[type="file"][accept*="{accept_filter}"]',
+                    'input[type="file"]',
+                ],
+                timeout_ms=15000,
+                require_visible=False,
+            )
+            if input_ready is None:
+                raise RuntimeError(
+                    f"没有找到{mode_text}的文件上传控件，请检查页面是否仍停留在发布页。"
+                )
+            notify(f"正在上传{len(existing)}个素材...")
+            result["uploaded_files"] = _upload_files(
+                page,
+                existing,
+                accept_contains=accept_filter,
+            )
             if result["uploaded_files"] == 0:
                 raise RuntimeError("没有找到小红书的图片或视频上传控件。")
 
-            page.wait_for_timeout(5000)
+            notify("素材已提交，正在等待上传和编辑区域...")
+            title_input = _wait_for_any(
+                page,
+                [
+                    'input[placeholder*="填写标题"]',
+                    'input[placeholder*="标题"]',
+                    'input[maxlength="20"]',
+                ],
+                timeout_ms=180000,
+                poll_ms=1000,
+            )
+            if title_input is None:
+                raise RuntimeError(
+                    "素材上传后没有出现标题输入框，请检查平台错误提示或素材格式。"
+                )
+            notify("正在填写标题、正文和标签...")
             result["title_filled"] = _fill_field(
                 page,
                 [
@@ -493,6 +573,7 @@ def assist_upload_xiaohongshu(
                     else "请检查预览、图片顺序和标签后，手动点击最终发布。"
                 )
             )
+            notify("标题、正文和标签处理完成，请人工确认最终发布。")
             if keep_open:
                 while context.pages:
                     page.wait_for_timeout(1000)
