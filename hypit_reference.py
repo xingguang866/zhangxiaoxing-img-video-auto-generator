@@ -491,6 +491,12 @@ def _canvas_for(aspect_ratio: str) -> tuple[int, int]:
     return 720, 1280
 
 
+def align_duration_to_frame(seconds: float, frame_rate: int = 30) -> float:
+    if frame_rate <= 0:
+        raise ValueError("frame_rate must be positive")
+    return max(1, int(float(seconds) * frame_rate)) / frame_rate
+
+
 def _srt_time(seconds: float) -> str:
     milliseconds = max(0, int(round(seconds * 1000)))
     hours, remainder = divmod(milliseconds, 3_600_000)
@@ -543,7 +549,8 @@ def generate_reference_project(
     analysis_dir.mkdir(parents=True, exist_ok=True)
     title = title.strip() or "参考视频二次创作"
     hook = hook.strip() or title
-    duration = max(1.0, float((evidence.get("probe") or {}).get("duration") or 1.0))
+    raw_duration = max(1.0, float((evidence.get("probe") or {}).get("duration") or 1.0))
+    duration = align_duration_to_frame(raw_duration)
     has_audio = bool((evidence.get("probe") or {}).get("hasAudio"))
     width, height = _canvas_for(aspect_ratio)
     title_duration = min(3.0, duration)

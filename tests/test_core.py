@@ -28,6 +28,7 @@ from hypit_service import (
     run_hypit,
 )
 from hypit_reference import (
+    align_duration_to_frame,
     heuristic_analysis,
     reference_workspace,
     run_reference_workflow,
@@ -291,6 +292,11 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(analysis["hook"]["proposed_text"], "久坐党别忽略这件事")
         self.assertEqual(len(analysis["rhythm"]["shot_change_candidates"]), 2)
         self.assertIn("editable_project", analysis)
+
+    def test_hypit_reference_duration_aligns_to_frame(self):
+        self.assertEqual(align_duration_to_frame(44.033), 44.0)
+        self.assertEqual(align_duration_to_frame(44.034), 44.03333333333333)
+        self.assertEqual(align_duration_to_frame(0.01), 1 / 30)
 
     def test_hypit_reference_project_generation(self):
         workspace_name = f"unittest_reference_{os.getpid()}"
