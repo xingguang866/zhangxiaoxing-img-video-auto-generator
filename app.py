@@ -45,6 +45,12 @@ from hypit_service import (
 )
 from hypit_simple_ui import HypitSimplePage
 from hypit_tutorial import build_tutorial_html
+from image_reference import (
+    build_reference_instruction,
+    max_reference_images_for_model,
+    reference_limit_text,
+    validate_reference_image,
+)
 from jianying_service import (
     create_jianying_draft,
     detect_jianying_versions,
@@ -176,6 +182,7 @@ def build_manual_image_items(
     style: str,
     cover_title: str,
     cover_subtitle: str,
+    reference_prompt: str = "",
 ) -> list[dict]:
     resolved_cover_title = (
         cover_title.strip()
@@ -191,6 +198,7 @@ def build_manual_image_items(
                 resolved_cover_title,
                 cover_subtitle,
                 style,
+                extra_prompt=reference_prompt,
             ),
             "size": "3:4",
             "is_cover": True,
@@ -200,7 +208,12 @@ def build_manual_image_items(
         {
             "title": theme or f"图片{index}",
             "style": style,
-            "prompt": build_image_prompt(theme, line, style),
+            "prompt": build_image_prompt(
+                theme,
+                line,
+                style,
+                extra_prompt=reference_prompt,
+            ),
             "is_cover": False,
         }
         for index, line in enumerate(page_lines, start=1)
@@ -371,12 +384,14 @@ class GenerationWorker(QtCore.QThread):
         *,
         size: str | None = None,
         resolution: str | None = None,
+        image_urls: list[str] | None = None,
     ) -> tuple[Path, str]:
         task_id = client.submit_image(
             prompt=prompt,
             model=self.settings["image_model"],
             size=size or self.settings["image_size"],
             resolution=resolution or self.settings["image_resolution"],
+            image_urls=image_urls,
         )
         self.signals.log.emit(f"图片任务已提交：{task_id}")
         task = client.wait_task(
@@ -478,6 +493,19 @@ class GenerationWorker(QtCore.QThread):
         output_dir = Path(self.payload["output_dir"])
         output_dir.mkdir(parents=True, exist_ok=True)
         generated = 0
+        reference_paths = [
+            Path(path)
+            for path in self.payload.get("reference_paths", [])
+            if Path(path).exists()
+        ]
+        reference_urls: list[str] = []
+        if client is not None and reference_paths:
+            for index, path in enumerate(reference_paths, start=1):
+                self._check_cancel()
+                self.signals.log.emit(
+                    f"上传参考图 {index}/{len(reference_paths)}：{path.name}"
+                )
+                reference_urls.append(client.upload_image(path))
 
         for index, item in enumerate(items, start=1):
             self._check_cancel()
@@ -497,6 +525,7 @@ class GenerationWorker(QtCore.QThread):
                     destination,
                     size=item.get("size"),
                     resolution=item.get("resolution"),
+                    image_urls=reference_urls or None,
                 )
             generated += 1
             self.signals.image_ready.emit(
@@ -1010,6 +1039,78 @@ class ImagePage(BaseGenerationPage):
         form.addRow("清晰度", self.resolution_combo)
         side_layout.addLayout(form)
 
+        reference_header = QtWidgets.QHBoxLayout()
+        reference_header.addWidget(section_label("参考图"))
+        reference_header.addStretch(1)
+        self.reference_count_label = hint_label("0/5 张")
+        reference_header.addWidget(self.reference_count_label)
+        side_layout.addLayout(reference_header)
+        side_layout.addWidget(
+            hint_label(
+                "参考图仅用于辅助生成，数量和格式由当前图片模型决定。"
+            )
+        )
+
+        self.reference_list = QtWidgets.QListWidget()
+        self.reference_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.reference_list.setFixedHeight(120)
+        side_layout.addWidget(self.reference_list)
+
+        reference_buttons = QtWidgets.QHBoxLayout()
+        self.add_reference_button = QtWidgets.QPushButton("上传参考图")
+        remove_reference_button = QtWidgets.QPushButton("移除选中")
+        clear_reference_button = QtWidgets.QPushButton("清空")
+        for button in (
+            self.add_reference_button,
+            remove_reference_button,
+            clear_reference_button,
+        ):
+            button.setObjectName("secondaryButton")
+        self.add_reference_button.clicked.connect(self.add_reference_images)
+        remove_reference_button.clicked.connect(self.remove_reference_images)
+        clear_reference_button.clicked.connect(self.clear_reference_images)
+        reference_buttons.addWidget(self.add_reference_button)
+        reference_buttons.addWidget(remove_reference_button)
+        reference_buttons.addWidget(clear_reference_button)
+        side_layout.addLayout(reference_buttons)
+
+        side_layout.addWidget(section_label("参考图提示词"))
+        self.reference_mode_combo = QtWidgets.QComboBox()
+        self.reference_mode_combo.addItem("不选择", "none")
+        self.reference_mode_combo.addItem("图中产品", "product")
+        self.reference_mode_combo.addItem("图中人物", "person")
+        self.reference_mode_combo.addItem("图中背景", "background")
+        self.reference_mode_combo.addItem("自定义：图1、图2...", "custom")
+        self.reference_mode_combo.currentIndexChanged.connect(
+            self._on_reference_mode_changed
+        )
+        side_layout.addWidget(self.reference_mode_combo)
+
+        self.reference_custom_edit = QtWidgets.QPlainTextEdit()
+        self.reference_custom_edit.setPlaceholderText(
+            "图1：描述第一张参考图\n"
+            "图2：描述第二张参考图\n"
+            "图3：描述第三张参考图"
+        )
+        self.reference_custom_edit.setFixedHeight(92)
+        self.reference_custom_edit.setVisible(False)
+        side_layout.addWidget(self.reference_custom_edit)
+        self.reference_template_button = QtWidgets.QPushButton(
+            "生成图1、图2描述模板"
+        )
+        self.reference_template_button.setObjectName("secondaryButton")
+        self.reference_template_button.setVisible(False)
+        self.reference_template_button.clicked.connect(
+            self.generate_reference_template
+        )
+        side_layout.addWidget(self.reference_template_button)
+        self.model_combo.currentTextChanged.connect(
+            self.update_reference_limit
+        )
+        self.update_reference_limit(self.model_combo.currentText())
+
         output_row = QtWidgets.QHBoxLayout()
         self.output_edit = QtWidgets.QLineEdit(
             self.current_settings()["image_output_dir"]
@@ -1064,6 +1165,7 @@ class ImagePage(BaseGenerationPage):
         self.model_combo.addItems(models)
         self.model_combo.setCurrentText(target)
         self.model_combo.blockSignals(False)
+        self.update_reference_limit(target)
 
     def connect_worker(self, worker: GenerationWorker) -> None:
         super().connect_worker(worker)
@@ -1090,6 +1192,111 @@ class ImagePage(BaseGenerationPage):
             "image_output_dir",
             self.output_edit.text().strip(),
         )
+
+    def update_reference_limit(self, model: str) -> None:
+        limit = max_reference_images_for_model(model)
+        while self.reference_list.count() > limit:
+            self.reference_list.takeItem(self.reference_list.count() - 1)
+        self.add_reference_button.setEnabled(limit > 0)
+        self._update_reference_count()
+        self.reference_count_label.setToolTip(reference_limit_text(model))
+
+    def _update_reference_count(self) -> None:
+        model = self.model_combo.currentText().strip()
+        limit = max_reference_images_for_model(model)
+        self.reference_count_label.setText(
+            f"{self.reference_list.count()}/{limit} 张"
+            if limit > 0
+            else "当前模型不支持"
+        )
+
+    def add_reference_images(self) -> None:
+        model = self.model_combo.currentText().strip()
+        limit = max_reference_images_for_model(model)
+        if limit <= 0:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "当前模型不支持参考图",
+                reference_limit_text(model),
+            )
+            return
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            "选择参考图",
+            str(Path.home()),
+            "参考图 (*.jpg *.jpeg *.png *.webp)",
+        )
+        if not paths:
+            return
+        existing = {
+            self.reference_list.item(index).text()
+            for index in range(self.reference_list.count())
+        }
+        errors: list[str] = []
+        for raw_path in paths:
+            if self.reference_list.count() >= limit:
+                errors.append(f"已达到当前模型上限 {limit} 张。")
+                break
+            path = str(Path(raw_path).resolve())
+            if path in existing:
+                continue
+            error = validate_reference_image(path)
+            if error:
+                errors.append(error)
+                continue
+            self.reference_list.addItem(path)
+            existing.add(path)
+        self._update_reference_count()
+        if errors:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "部分参考图未添加",
+                "\n".join(dict.fromkeys(errors)),
+            )
+
+    def remove_reference_images(self) -> None:
+        rows = sorted(
+            {index.row() for index in self.reference_list.selectedIndexes()},
+            reverse=True,
+        )
+        for row in rows:
+            self.reference_list.takeItem(row)
+        self._update_reference_count()
+
+    def clear_reference_images(self) -> None:
+        self.reference_list.clear()
+        self._update_reference_count()
+
+    def _on_reference_mode_changed(self) -> None:
+        custom = self.reference_mode_combo.currentData() == "custom"
+        self.reference_custom_edit.setVisible(custom)
+        self.reference_template_button.setVisible(custom)
+
+    def generate_reference_template(self) -> None:
+        count = max(1, self.reference_list.count())
+        self.reference_custom_edit.setPlainText(
+            "\n".join(f"图{index}：" for index in range(1, count + 1))
+        )
+
+    def reference_prompt_instruction(self) -> str:
+        count = self.reference_list.count()
+        mode = str(self.reference_mode_combo.currentData() or "none")
+        instruction = build_reference_instruction(
+            mode,
+            self.reference_custom_edit.toPlainText(),
+            image_count=count,
+        )
+        if count and mode == "custom" and not instruction:
+            raise ValueError(
+                "当前选择了自定义参考图提示词，请填写图1、图2等描述。"
+            )
+        return instruction
+
+    def selected_reference_paths(self) -> list[str]:
+        return [
+            self.reference_list.item(index).text()
+            for index in range(self.reference_list.count())
+        ]
 
     def update_cover_counter(self, text: str) -> None:
         count = count_chinese_characters(text)
@@ -1130,7 +1337,18 @@ class ImagePage(BaseGenerationPage):
             }
         )
         style = self.style_combo.currentText()
-        prompt = build_cover_prompt(theme, title, subtitle, style)
+        try:
+            reference_prompt = self.reference_prompt_instruction()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "参考图提示词不完整", str(exc))
+            return
+        prompt = build_cover_prompt(
+            theme,
+            title,
+            subtitle,
+            style,
+            extra_prompt=reference_prompt,
+        )
         item = {
             "title": f"封面_{title}",
             "style": style,
@@ -1143,7 +1361,11 @@ class ImagePage(BaseGenerationPage):
         self.start_worker(
             "manual_images",
             settings,
-            {"items": [item], "output_dir": str(output_dir)},
+            {
+                "items": [item],
+                "output_dir": str(output_dir),
+                "reference_paths": self.selected_reference_paths(),
+            },
         )
 
     def generate(self) -> None:
@@ -1161,19 +1383,33 @@ class ImagePage(BaseGenerationPage):
             }
         )
         style = self.style_combo.currentText()
+        try:
+            reference_prompt = self.reference_prompt_instruction()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "参考图提示词不完整", str(exc))
+            return
         items = build_manual_image_items(
             theme=theme,
             page_lines=lines,
             style=style,
             cover_title=self.cover_title_edit.text().strip(),
             cover_subtitle=self.cover_subtitle_edit.text().strip(),
+            reference_prompt=reference_prompt,
         )
         self.save_output_dir()
         output_base = Path(self.output_edit.text().strip() or settings["image_output_dir"])
         output_dir = output_base / f"图文_{datetime.now():%Y%m%d_%H%M%S}"
         self.gallery.set_items([])
         self.progress.setValue(0)
-        self.start_worker("manual_images", settings, {"items": items, "output_dir": str(output_dir)})
+        self.start_worker(
+            "manual_images",
+            settings,
+            {
+                "items": items,
+                "output_dir": str(output_dir),
+                "reference_paths": self.selected_reference_paths(),
+            },
+        )
 
     def on_finished(self, summary: dict) -> None:
         if "error" in summary:

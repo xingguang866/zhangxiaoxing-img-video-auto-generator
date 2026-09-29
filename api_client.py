@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from image_reference import max_reference_images_for_model
+
 
 class APIClientError(RuntimeError):
     pass
@@ -407,6 +409,14 @@ class APIMartClient:
             "nsfw_check": nsfw_check,
         }
         if image_urls:
+            limit = max_reference_images_for_model(model)
+            if limit <= 0:
+                raise APIClientError("当前图片模型不支持参考图，请更换支持图生图的模型。")
+            if len(image_urls) > limit:
+                raise APIClientError(
+                    f"当前图片模型最多使用 {limit} 张参考图，"
+                    f"当前选择了 {len(image_urls)} 张。"
+                )
             payload["image_urls"] = image_urls
 
         response = self._request("POST", "/images/generations", json_body=payload)

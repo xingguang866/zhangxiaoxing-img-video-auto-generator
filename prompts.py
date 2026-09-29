@@ -52,11 +52,14 @@ def build_cover_prompt(
     cover_title: str,
     cover_subtitle: str,
     style: str,
+    *,
+    extra_prompt: str = "",
 ) -> str:
     theme = theme.strip()
     cover_title = cover_title.strip() or theme or "健康生活小知识"
     cover_subtitle = cover_subtitle.strip()
     style_prompt = STYLE_PROMPTS.get(style, STYLE_PROMPTS["不限风格"])
+    extra_prompt = extra_prompt.strip()
 
     parts = [
         "生成一张3:4竖版中文封面图，适合抖音、小红书、视频号图文和短视频使用。",
@@ -95,6 +98,8 @@ def build_cover_prompt(
             "内容边界：不出现隐私部位、血腥、医疗器械、疗效对比和夸大承诺。",
         ]
     )
+    if extra_prompt:
+        parts.append(f"补充要求：{extra_prompt}")
     return "".join(parts)
 
 

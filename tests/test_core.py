@@ -61,6 +61,11 @@ from hypit_rewrite import (
     run_originality_workflow,
 )
 from hypit_tutorial import ASSET_DIR, build_tutorial_html
+from image_reference import (
+    build_reference_instruction,
+    max_reference_images_for_model,
+    validate_reference_image,
+)
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
 from pricing_utils import format_pricing, format_usage
 from publish_platforms import PLATFORMS, build_platform_posts
@@ -115,6 +120,60 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(items[0]["size"], "3:4")
         self.assertIn("封面主标题", items[0]["prompt"])
         self.assertFalse(items[1]["is_cover"])
+
+    def test_image_reference_limits_and_prompt(self):
+        self.assertEqual(max_reference_images_for_model("gpt-image-2"), 5)
+        self.assertEqual(max_reference_images_for_model("seedream-5.0-pro"), 10)
+        self.assertEqual(max_reference_images_for_model("qwen-image-3.0"), 3)
+        self.assertEqual(max_reference_images_for_model("z-image-turbo"), 0)
+        instruction = build_reference_instruction(
+            "product",
+            image_count=2,
+        )
+        self.assertIn("产品", instruction)
+        self.assertEqual(
+            build_reference_instruction("none", image_count=2),
+            "",
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / "reference.png"
+            image.write_bytes(b"image")
+            self.assertEqual(validate_reference_image(image), "")
+            invalid = Path(temp) / "reference.txt"
+            invalid.write_text("bad", encoding="utf-8")
+            self.assertIn("仅支持", validate_reference_image(invalid))
+
+    def test_image_page_reference_controls(self):
+        window = MainWindow()
+        page = window.image_page
+        self.assertEqual(
+            [
+                page.reference_mode_combo.itemData(index)
+                for index in range(page.reference_mode_combo.count())
+            ],
+            ["none", "product", "person", "background", "custom"],
+        )
+        page.model_combo.setCurrentText("z-image-turbo")
+        self.assertFalse(page.add_reference_button.isEnabled())
+        page.model_combo.setCurrentText("gpt-image-2")
+        self.assertTrue(page.add_reference_button.isEnabled())
+        page.reference_mode_combo.setCurrentIndex(
+            page.reference_mode_combo.findData("custom")
+        )
+        self.assertFalse(page.reference_custom_edit.isHidden())
+        self.assertFalse(page.reference_template_button.isHidden())
+        window.close()
+
+    def test_image_reference_limit_is_enforced_by_client(self):
+        client = APIMartClient(APIConfig(api_key="test"))
+        with self.assertRaisesRegex(APIClientError, "最多使用 5 张参考图"):
+            client.submit_image(
+                prompt="测试",
+                model="gpt-image-2",
+                size="3:4",
+                resolution="1k",
+                image_urls=[f"https://example.com/{index}.png" for index in range(6)],
+            )
 
     def test_batch_jobs_include_large_title_cover(self):
         item = BatchItem(
