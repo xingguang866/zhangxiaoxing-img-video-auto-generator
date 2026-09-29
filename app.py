@@ -70,6 +70,7 @@ from publish_batch import (
     dedupe_publish_drafts,
     discover_publish_drafts,
     load_publish_metadata_from_excel,
+    parse_publish_datetime,
     publish_draft_validation_tooltip,
     validate_publish_draft,
     validate_publish_drafts,
@@ -3487,6 +3488,7 @@ class PublishPage(QtWidgets.QWidget):
             self.media_list.addItem(path)
         for key, checkbox in self.platform_checks.items():
             checkbox.setChecked(key == "xiaohongshu")
+        self._apply_draft_schedule(draft)
         self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
         self.status_label.setText(
             f"已载入{draft.source_page}草稿：{draft.title or '未命名'}"
@@ -3516,8 +3518,33 @@ class PublishPage(QtWidgets.QWidget):
             self.media_list.item(index).text()
             for index in range(self.media_list.count())
         ]
+        xhs_widgets = self.platform_widgets["xiaohongshu"]
+        if xhs_widgets["schedule_check"].isChecked():
+            draft.scheduled_at = (
+                xhs_widgets["schedule_edit"].dateTime().toString(
+                    "yyyy-MM-dd HH:mm"
+                )
+            )
+        else:
+            draft.scheduled_at = ""
         validate_publish_draft(draft)
         self._refresh_draft_table(select_id=draft.draft_id)
+
+    def _apply_draft_schedule(self, draft: PublishDraft) -> None:
+        widgets = self.platform_widgets["xiaohongshu"]
+        schedule_check = widgets["schedule_check"]
+        schedule_edit = widgets["schedule_edit"]
+        parsed = parse_publish_datetime(draft.scheduled_at)
+        if parsed is None:
+            schedule_check.setChecked(False)
+            return
+        schedule_value = QtCore.QDateTime(parsed)
+        if schedule_value < schedule_edit.minimumDateTime():
+            schedule_value = schedule_edit.minimumDateTime()
+        if schedule_value > schedule_edit.maximumDateTime():
+            schedule_value = schedule_edit.maximumDateTime()
+        schedule_edit.setDateTime(schedule_value)
+        schedule_check.setChecked(True)
 
     def _draft_by_id(self, draft_id: str) -> PublishDraft | None:
         return next(

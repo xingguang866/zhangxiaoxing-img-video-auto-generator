@@ -305,6 +305,9 @@ class CoreTests(unittest.TestCase):
             image.write_bytes(b"image")
             video = Path(temp) / "video.mp4"
             video.write_bytes(b"video")
+            scheduled_at = (
+                datetime.now() + timedelta(days=2)
+            ).replace(second=0, microsecond=0)
             image_draft = PublishDraft(
                 draft_id=new_publish_draft_id(),
                 source_page="图文生成",
@@ -322,6 +325,7 @@ class CoreTests(unittest.TestCase):
                 title="视频发布草稿",
                 description="视频简介",
                 tags=["健康科普"],
+                scheduled_at=scheduled_at.strftime("%Y-%m-%d %H:%M"),
             )
             window.open_publish_center([image_draft, video_draft])
             self.app.processEvents()
@@ -331,6 +335,12 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(window.publish_page.title_edit.text(), "视频发布草稿")
             self.assertTrue(window.publish_page.platform_checks["xiaohongshu"].isChecked())
             self.assertFalse(window.publish_page.platform_checks["douyin"].isChecked())
+            xhs_widgets = window.publish_page.platform_widgets["xiaohongshu"]
+            self.assertTrue(xhs_widgets["schedule_check"].isChecked())
+            self.assertEqual(
+                xhs_widgets["schedule_edit"].dateTime().toPython(),
+                scheduled_at,
+            )
             self.assertEqual(
                 window.publish_page.tabs.currentIndex(),
                 list(PLATFORMS).index("xiaohongshu"),
