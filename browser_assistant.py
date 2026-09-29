@@ -15,6 +15,8 @@ from publish_platforms import PLATFORMS
 
 XIAOHONGSHU_LOGIN_URL = "https://creator.xiaohongshu.com/login"
 XIAOHONGSHU_PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish"
+DOUYIN_LOGIN_URL = "https://creator.douyin.com/"
+DOUYIN_PUBLISH_URL = "https://creator.douyin.com/creator-micro/content/upload"
 
 
 def edge_executable() -> Path | None:
@@ -246,6 +248,108 @@ def clear_xiaohongshu_login() -> str:
         raise RuntimeError(f"清除小红书登录状态失败：{exc}") from exc
     profile.mkdir(parents=True, exist_ok=True)
     return "小红书独立浏览器配置已清除。"
+
+
+def _douyin_logged_in(page: Page, context: BrowserContext) -> bool:
+    try:
+        if not str(page.locator("body").inner_text() or "").strip():
+            return False
+        if "/login" in page.url:
+            return False
+        login_markers = (
+            'text=扫码登录',
+            'text=手机号登录',
+            'text=验证码登录',
+            'text=立即登录',
+            'text=登录后',
+        )
+        if _first_visible(page, list(login_markers)) is not None:
+            return False
+        cookie_names = {cookie.get("name") for cookie in context.cookies()}
+        if {"sessionid", "sid_guard"} & cookie_names:
+            return True
+        return _first_visible(
+            page,
+            [
+                'text=发布视频',
+                'text=发布图文',
+                'text=作品管理',
+                'text=创作者中心',
+                'text=数据概览',
+            ],
+        ) is not None
+    except Exception:
+        return False
+
+
+def douyin_login_status(
+    *,
+    browser_name: str = "edge",
+) -> tuple[bool, str]:
+    with sync_playwright() as playwright:
+        context = _persistent_context(
+            playwright,
+            "douyin",
+            headless=True,
+            browser_name=browser_name,
+        )
+        try:
+            page = context.new_page()
+            page.goto(
+                DOUYIN_PUBLISH_URL,
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            page.wait_for_timeout(3000)
+            if _douyin_logged_in(page, context):
+                return True, "抖音已登录。"
+            return False, "抖音未登录，请点击“扫码登录抖音”。"
+        finally:
+            context.close()
+
+
+def douyin_login(
+    *,
+    timeout_seconds: int = 300,
+    browser_name: str = "edge",
+) -> tuple[bool, str]:
+    with sync_playwright() as playwright:
+        context = _persistent_context(
+            playwright,
+            "douyin",
+            headless=False,
+            browser_name=browser_name,
+        )
+        try:
+            page = context.new_page()
+            page.goto(
+                DOUYIN_LOGIN_URL,
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            started = time.monotonic()
+            while time.monotonic() - started < timeout_seconds:
+                if not context.pages:
+                    return False, "登录窗口已关闭。"
+                page.wait_for_timeout(2000)
+                if _douyin_logged_in(page, context):
+                    return True, "抖音扫码登录成功，登录状态已保存在独立浏览器配置中。"
+            return False, "等待抖音扫码登录超时，请重新点击“扫码登录抖音”。"
+        finally:
+            context.close()
+
+
+def clear_douyin_login() -> str:
+    profile = browser_profile_dir("douyin")
+    terminate_platform_browser_processes("douyin")
+    try:
+        shutil.rmtree(profile)
+    except FileNotFoundError:
+        return "抖音独立浏览器配置已清除。"
+    except OSError as exc:
+        raise RuntimeError(f"清除抖音登录状态失败：{exc}") from exc
+    profile.mkdir(parents=True, exist_ok=True)
+    return "抖音独立浏览器配置已清除。"
 
 
 def _first_visible(page: Page, selectors: list[str]):
@@ -609,6 +713,191 @@ def _verify_xiaohongshu_draft_fields(
             raise RuntimeError("发布前校验失败：定时发布时间没有写入。")
 
 
+def _wait_for_douyin_upload_complete(
+    page: Page,
+    *,
+    media_type: str,
+    expected_count: int,
+    timeout_ms: int = 300000,
+) -> None:
+    started = time.monotonic()
+    while (time.monotonic() - started) * 1000 < timeout_ms:
+        uploading = _first_visible(
+            page,
+            [
+                "text=上传中",
+                "text=正在上传",
+                "text=处理中",
+            ],
+        )
+        if uploading is None:
+            editor_ready = _first_visible(
+                page,
+                [
+                    'input[placeholder*="标题"]',
+                    'textarea[placeholder*="作品描述"]',
+                    'textarea[placeholder*="添加作品描述"]',
+                    '[contenteditable="true"]',
+                ],
+            )
+            if editor_ready is not None:
+                page.wait_for_timeout(1500)
+                return
+        page.wait_for_timeout(1000)
+    raise RuntimeError("抖音素材上传超时，页面未完成素材处理。")
+
+
+def _append_douyin_tags(page: Page, tags: list[str]) -> int:
+    clean_tags = [tag.strip().lstrip("#") for tag in tags if tag.strip().lstrip("#")]
+    if not clean_tags:
+        return 0
+    editor = _first_visible(
+        page,
+        [
+            '[contenteditable="true"]',
+            'textarea[placeholder*="添加作品描述"]',
+            'textarea[placeholder*="作品描述"]',
+        ],
+    )
+    if editor is None:
+        return 0
+    try:
+        editor.click(timeout=3000)
+        page.keyboard.press("Control+End")
+        page.keyboard.press("Enter")
+        page.keyboard.type(" ".join(f"#{tag}" for tag in clean_tags), delay=20)
+        return len(clean_tags)
+    except Exception:
+        return 0
+
+
+def _configure_douyin_schedule(
+    page: Page,
+    schedule_at: str,
+) -> tuple[bool, str]:
+    schedule_at = schedule_at.strip()
+    if not schedule_at:
+        return False, ""
+    try:
+        datetime.strptime(schedule_at, "%Y-%m-%d %H:%M")
+    except ValueError as exc:
+        raise RuntimeError("定时发布时间格式不正确，应为 YYYY-MM-DD HH:MM。") from exc
+
+    switch = _wait_for_any(
+        page,
+        [
+            'label:has-text("定时发布") input[type="checkbox"]',
+            'div:has-text("定时发布") input[type="checkbox"]',
+            '[class*="switch"]:has-text("定时发布")',
+            'text=定时发布',
+        ],
+        timeout_ms=10000,
+    )
+    if switch is None:
+        raise RuntimeError("抖音页面没有找到“定时发布”开关。")
+    try:
+        checkbox = _first_visible(
+            page,
+            [
+                'label:has-text("定时发布") input[type="checkbox"]',
+                'div:has-text("定时发布") input[type="checkbox"]',
+            ],
+        )
+        if checkbox is not None and not checkbox.is_checked():
+            switch.click(force=True)
+            page.wait_for_timeout(1000)
+        elif checkbox is None:
+            switch.click(force=True)
+            page.wait_for_timeout(1000)
+    except Exception as exc:
+        raise RuntimeError(f"开启抖音定时发布失败：{exc}") from exc
+
+    date_input = _wait_for_any(
+        page,
+        [
+            'input[placeholder*="选择时间"]',
+            'input[placeholder*="发布时间"]',
+            'input[placeholder*="请选择"]',
+            '[class*="schedule"] input',
+            '[class*="time"] input',
+        ],
+        timeout_ms=10000,
+    )
+    if date_input is None:
+        raise RuntimeError("没有找到抖音定时发布时间输入框。")
+    date_input.click(timeout=3000)
+    if not _commit_input_value(date_input, schedule_at):
+        raise RuntimeError("抖音定时发布时间没有成功写入页面。")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(800)
+    value = str(date_input.input_value() or "").strip()
+    if value != schedule_at:
+        slash_value = datetime.strptime(
+            schedule_at,
+            "%Y-%m-%d %H:%M",
+        ).strftime("%Y/%m/%d %H:%M")
+        if not _commit_input_value(date_input, slash_value):
+            raise RuntimeError(
+                f"抖音定时发布时间没有正确写入，页面当前值为：{value or '空'}"
+            )
+        value = str(date_input.input_value() or "").strip()
+    return True, value
+
+
+def _verify_douyin_fields(
+    page: Page,
+    *,
+    title: str,
+    description: str,
+    tags: list[str],
+    schedule_at: str,
+) -> None:
+    title_input = _first_visible(
+        page,
+        [
+            'input[placeholder*="填写作品标题"]',
+            'input[placeholder*="作品标题"]',
+            'input[placeholder*="标题"]',
+        ],
+    )
+    if title_input is not None and title.strip():
+        if title_input.input_value().strip() != title.strip():
+            raise RuntimeError("发布前校验失败：抖音标题没有写入页面。")
+    editor = _first_visible(
+        page,
+        [
+            '[contenteditable="true"]',
+            'textarea[placeholder*="作品描述"]',
+            'textarea[placeholder*="添加作品描述"]',
+        ],
+    )
+    if editor is None:
+        raise RuntimeError("发布前校验失败：没有找到抖音作品描述编辑器。")
+    try:
+        editor_text = _normalize_editor_text(
+            editor.input_value() if editor.evaluate("(e) => e.tagName === 'TEXTAREA'") else editor.inner_text()
+        )
+    except Exception:
+        editor_text = ""
+    if description.strip() and _normalize_editor_text(description) not in editor_text:
+        raise RuntimeError("发布前校验失败：抖音作品描述没有写入页面。")
+    if tags and not all(f"#{tag.lstrip('#')}" in editor_text for tag in tags):
+        raise RuntimeError("发布前校验失败：抖音话题标签没有全部写入。")
+    if schedule_at:
+        value = ""
+        for selector in (
+            'input[placeholder*="选择时间"]',
+            'input[placeholder*="发布时间"]',
+            'input[placeholder*="请选择"]',
+        ):
+            locator = _first_visible(page, [selector])
+            if locator is not None:
+                value = str(locator.input_value() or "").strip()
+                break
+        if not value:
+            raise RuntimeError("发布前校验失败：抖音定时发布时间为空。")
+
+
 def _find_xiaohongshu_publish_button(page: Page):
     return _wait_for_any(
         page,
@@ -766,7 +1055,7 @@ def assist_upload_xiaohongshu(
                 except Exception:
                     pass
 
-            accept_filter = ".mp4" if media_type == "video" else ".jpg"
+            accept_filter = "video" if media_type == "video" else "image"
             input_ready = _wait_for_any(
                 page,
                 [
@@ -883,6 +1172,201 @@ def assist_upload_xiaohongshu(
                 )
             )
             notify("标题、正文和标签处理完成，请人工确认最终发布。")
+            if keep_open:
+                pages_empty_since: float | None = None
+                while True:
+                    if context.pages:
+                        pages_empty_since = None
+                        page.wait_for_timeout(1000)
+                        continue
+                    if pages_empty_since is None:
+                        pages_empty_since = time.monotonic()
+                    if time.monotonic() - pages_empty_since > 10:
+                        break
+                    time.sleep(1)
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
+    return result
+
+
+def assist_upload_douyin(
+    *,
+    media_paths: list[str | Path],
+    media_type: str,
+    title: str,
+    description: str,
+    tags: list[str],
+    keep_open: bool = True,
+    browser_name: str = "edge",
+    auto_publish: bool = False,
+    schedule_at: str = "",
+    progress: Callable[[str], None] | None = None,
+) -> dict:
+    notify = progress or (lambda _message: None)
+    existing = [Path(path) for path in media_paths if Path(path).exists()]
+    if not existing:
+        raise RuntimeError("没有可上传的图片或视频。")
+
+    with sync_playwright() as playwright:
+        context = _persistent_context(
+            playwright,
+            "douyin",
+            headless=False,
+            browser_name=browser_name,
+        )
+        result = {
+            "platform": "抖音",
+            "uploaded_files": 0,
+            "title_filled": False,
+            "description_filled": False,
+            "tags_filled": False,
+            "published": False,
+            "scheduled": False,
+            "scheduled_at": "",
+            "message": "",
+        }
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            notify("正在打开抖音创作者发布页...")
+            page.goto(
+                DOUYIN_PUBLISH_URL,
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            page.wait_for_timeout(3500)
+            if not _douyin_logged_in(page, context):
+                raise RuntimeError("抖音未登录，请先点击“扫码登录抖音”。")
+
+            mode_text = "发布视频" if media_type == "video" else "发布图文"
+            notify(f"正在切换{mode_text}模式...")
+            mode_button = page.locator(".creator-tab").filter(
+                has_text=mode_text
+            ).last
+            if mode_button.count() == 0:
+                mode_button = _first_visible(
+                    page,
+                    [
+                        f'button:has-text("{mode_text}")',
+                        f'div[role="tab"]:has-text("{mode_text}")',
+                        f'text={mode_text}',
+                    ],
+                )
+            if mode_button is not None:
+                try:
+                    mode_button.scroll_into_view_if_needed(timeout=3000)
+                    mode_button.click(timeout=3000)
+                    page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+
+            accept_filter = ".mp4" if media_type == "video" else ".jpg"
+            input_ready = _wait_for_any(
+                page,
+                [
+                    f'input[type="file"][accept*="{accept_filter}"]',
+                    'input[type="file"]',
+                ],
+                timeout_ms=15000,
+                require_visible=False,
+            )
+            if input_ready is None:
+                raise RuntimeError(
+                    f"没有找到抖音{mode_text}的文件上传控件。"
+                )
+            notify(f"正在上传{len(existing)}个素材...")
+            result["uploaded_files"] = _upload_files(
+                page,
+                existing,
+                accept_contains=accept_filter,
+            )
+            if result["uploaded_files"] == 0:
+                raise RuntimeError("没有找到抖音的图片或视频上传控件。")
+
+            notify("素材已提交，正在等待上传完成...")
+            _wait_for_douyin_upload_complete(
+                page,
+                media_type=media_type,
+                expected_count=result["uploaded_files"],
+            )
+            notify("素材上传完成，正在填写标题、正文和标签...")
+            title_input = _wait_for_any(
+                page,
+                [
+                    'input[placeholder*="填写作品标题"]',
+                    'input[placeholder*="作品标题"]',
+                    'input[placeholder*="标题"]',
+                ],
+                timeout_ms=180000,
+                poll_ms=1000,
+            )
+            if title_input is not None and title.strip():
+                result["title_filled"] = _commit_input_value(title_input, title)
+
+            body_editor = _wait_for_any(
+                page,
+                [
+                    '[contenteditable="true"]',
+                    'textarea[placeholder*="添加作品描述"]',
+                    'textarea[placeholder*="作品描述"]',
+                    'textarea[placeholder*="简介"]',
+                ],
+                timeout_ms=30000,
+            )
+            if body_editor is None:
+                raise RuntimeError("没有找到抖音作品描述编辑器。")
+            is_textarea = body_editor.evaluate("(e) => e.tagName === 'TEXTAREA'")
+            if is_textarea:
+                result["description_filled"] = _fill_field(
+                    page,
+                    [
+                        'textarea[placeholder*="添加作品描述"]',
+                        'textarea[placeholder*="作品描述"]',
+                        'textarea[placeholder*="简介"]',
+                    ],
+                    description,
+                )
+            else:
+                result["description_filled"] = _fill_tiptap_body(
+                    page,
+                    body_editor,
+                    description,
+                )
+            inserted_tags = _append_douyin_tags(page, tags)
+            result["tags_filled"] = inserted_tags == len(
+                [tag for tag in tags if tag.strip()]
+            )
+            if schedule_at.strip():
+                notify(f"正在设置抖音定时发布：{schedule_at}...")
+                scheduled, actual_schedule = _configure_douyin_schedule(
+                    page,
+                    schedule_at,
+                )
+                result["scheduled"] = scheduled
+                result["scheduled_at"] = actual_schedule
+            _verify_douyin_fields(
+                page,
+                title=title,
+                description=description,
+                tags=tags,
+                schedule_at=schedule_at,
+            )
+            result["message"] = (
+                "已打开抖音官方发布页。"
+                f"素材加载 {result['uploaded_files']} 个，"
+                f"标题自动填写{'完成' if result['title_filled'] else '未完成'}，"
+                f"正文自动填写{'完成' if result['description_filled'] else '未完成'}，"
+                f"话题标签写入 {inserted_tags}/{len(tags)}。"
+                + (
+                    f"已设置定时发布：{result['scheduled_at']}。"
+                    if result["scheduled"]
+                    else ""
+                )
+                + "请检查预览和内容后，手动点击最终发布。"
+            )
+            notify("抖音标题、正文和标签处理完成，请人工确认最终发布。")
             if keep_open:
                 pages_empty_since: float | None = None
                 while True:

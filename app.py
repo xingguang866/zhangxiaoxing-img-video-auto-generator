@@ -20,8 +20,12 @@ from batch_publish_ui import (
 )
 from browser_assistant import (
     assist_upload,
+    assist_upload_douyin,
     assist_upload_xiaohongshu,
+    clear_douyin_login,
     clear_xiaohongshu_login,
+    douyin_login,
+    douyin_login_status,
     open_platform_page,
     xiaohongshu_login,
     xiaohongshu_login_status,
@@ -2984,15 +2988,23 @@ class PublishAssistThread(QtCore.QThread):
     result = QtCore.Signal(dict)
     error = QtCore.Signal(str)
 
-    def __init__(self, params: dict, parent=None):
+    def __init__(self, params: dict, target: str = "", parent=None):
         super().__init__(parent)
         self.params = params
+        self.target = target
 
     def run(self) -> None:
         try:
-            if "media_type" in self.params and "tags" in self.params:
+            if self.target == "xiaohongshu":
                 self.result.emit(
                     assist_upload_xiaohongshu(
+                        **self.params,
+                        progress=self.progress.emit,
+                    )
+                )
+            elif self.target == "douyin":
+                self.result.emit(
+                    assist_upload_douyin(
                         **self.params,
                         progress=self.progress.emit,
                     )
@@ -3003,28 +3015,51 @@ class PublishAssistThread(QtCore.QThread):
             self.error.emit(str(exc))
 
 
-class XiaohongshuLoginThread(QtCore.QThread):
+class PlatformLoginThread(QtCore.QThread):
     result = QtCore.Signal(bool, str)
 
-    def __init__(self, action: str, browser_name: str = "edge", parent=None):
+    def __init__(
+        self,
+        platform_key: str,
+        action: str,
+        browser_name: str = "edge",
+        parent=None,
+    ):
         super().__init__(parent)
+        self.platform_key = platform_key
         self.action = action
         self.browser_name = browser_name
 
     def run(self) -> None:
         try:
-            if self.action == "login":
-                success, message = xiaohongshu_login(
-                    browser_name=self.browser_name
-                )
-            elif self.action == "check":
-                success, message = xiaohongshu_login_status(
-                    browser_name=self.browser_name
-                )
-            elif self.action == "clear":
-                success, message = True, clear_xiaohongshu_login()
+            if self.platform_key == "douyin":
+                if self.action == "login":
+                    success, message = douyin_login(
+                        browser_name=self.browser_name
+                    )
+                elif self.action == "check":
+                    success, message = douyin_login_status(
+                        browser_name=self.browser_name
+                    )
+                elif self.action == "clear":
+                    success, message = True, clear_douyin_login()
+                else:
+                    success, message = False, f"未知登录操作：{self.action}"
+            elif self.platform_key == "xiaohongshu":
+                if self.action == "login":
+                    success, message = xiaohongshu_login(
+                        browser_name=self.browser_name
+                    )
+                elif self.action == "check":
+                    success, message = xiaohongshu_login_status(
+                        browser_name=self.browser_name
+                    )
+                elif self.action == "clear":
+                    success, message = True, clear_xiaohongshu_login()
+                else:
+                    success, message = False, f"未知登录操作：{self.action}"
             else:
-                success, message = False, f"未知登录操作：{self.action}"
+                success, message = False, "当前平台暂不支持扫码登录管理。"
             self.result.emit(success, message)
         except Exception as exc:
             self.result.emit(False, str(exc))
@@ -3037,7 +3072,7 @@ class PublishPage(QtWidgets.QWidget):
         self.posts_by_key: dict[str, PlatformPost] = {}
         self.platform_widgets: dict[str, dict] = {}
         self.assist_thread: PublishAssistThread | None = None
-        self.login_thread: XiaohongshuLoginThread | None = None
+        self.login_thread: PlatformLoginThread | None = None
         self.batch_prepare_thread: BatchPublishQueueThread | None = None
         self.drafts: list[PublishDraft] = []
         self.current_draft_id = ""
@@ -3206,7 +3241,7 @@ class PublishPage(QtWidgets.QWidget):
             tags = QtWidgets.QLineEdit()
             tags.setPlaceholderText("平台标签")
             validation = hint_label("尚未生成适配文案。")
-            login_status = hint_label("小红书登录状态：未检测。")
+            login_status = hint_label(f"{profile.name}登录状态：未检测。")
             browser_combo = QtWidgets.QComboBox()
             browser_combo.addItem("Microsoft Edge（推荐）", "edge")
             browser_combo.addItem("Google Chrome", "chrome")
@@ -3226,19 +3261,19 @@ class PublishPage(QtWidgets.QWidget):
 
             schedule_check.toggled.connect(schedule_edit.setEnabled)
             login_buttons = QtWidgets.QHBoxLayout()
-            login_button = QtWidgets.QPushButton("扫码登录小红书")
+            login_button = QtWidgets.QPushButton(f"扫码登录{profile.name}")
             check_login_button = QtWidgets.QPushButton("检测登录状态")
             clear_login_button = QtWidgets.QPushButton("清除登录状态")
             for button in (login_button, check_login_button, clear_login_button):
                 button.setObjectName("secondaryButton")
             login_button.clicked.connect(
-                lambda checked=False: self.run_login_action("login")
+                lambda checked=False, k=key: self.run_login_action(k, "login")
             )
             check_login_button.clicked.connect(
-                lambda checked=False: self.run_login_action("check")
+                lambda checked=False, k=key: self.run_login_action(k, "check")
             )
             clear_login_button.clicked.connect(
-                lambda checked=False: self.run_login_action("clear")
+                lambda checked=False, k=key: self.run_login_action(k, "clear")
             )
             login_buttons.addWidget(login_button)
             login_buttons.addWidget(check_login_button)
@@ -3255,8 +3290,8 @@ class PublishPage(QtWidgets.QWidget):
             buttons.addWidget(copy_button)
             buttons.addWidget(open_button)
             buttons.addWidget(upload_button)
-            if key == "xiaohongshu":
-                layout.addWidget(section_label("小红书登录"))
+            if key in {"xiaohongshu", "douyin"}:
+                layout.addWidget(section_label(f"{profile.name}登录"))
                 layout.addWidget(QtWidgets.QLabel("自动化浏览器"))
                 layout.addWidget(browser_combo)
                 layout.addWidget(login_status)
@@ -3295,6 +3330,7 @@ class PublishPage(QtWidgets.QWidget):
                 "browser_combo": browser_combo,
                 "schedule_check": schedule_check,
                 "schedule_edit": schedule_edit,
+                "supports_schedule": key in {"xiaohongshu", "douyin"},
             }
             self.tabs.addTab(page, profile.name)
         self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
@@ -3661,33 +3697,40 @@ class PublishPage(QtWidgets.QWidget):
             self.media_list.item(index).text()
             for index in range(self.media_list.count())
         ]
-        xhs_widgets = self.platform_widgets["xiaohongshu"]
-        if xhs_widgets["schedule_check"].isChecked():
+        platform_keys = list(PLATFORMS)
+        current_key = platform_keys[self.tabs.currentIndex()]
+        current_widgets = self.platform_widgets[current_key]
+        if (
+            current_widgets.get("supports_schedule")
+            and current_widgets["schedule_check"].isChecked()
+        ):
             draft.scheduled_at = (
-                xhs_widgets["schedule_edit"].dateTime().toString(
+                current_widgets["schedule_edit"].dateTime().toString(
                     "yyyy-MM-dd HH:mm"
                 )
             )
-        else:
+        elif current_widgets.get("supports_schedule"):
             draft.scheduled_at = ""
         validate_publish_draft(draft)
         self._refresh_draft_table(select_id=draft.draft_id)
 
     def _apply_draft_schedule(self, draft: PublishDraft) -> None:
-        widgets = self.platform_widgets["xiaohongshu"]
-        schedule_check = widgets["schedule_check"]
-        schedule_edit = widgets["schedule_edit"]
         parsed = parse_publish_datetime(draft.scheduled_at)
-        if parsed is None:
-            schedule_check.setChecked(False)
-            return
-        schedule_value = QtCore.QDateTime(parsed)
-        if schedule_value < schedule_edit.minimumDateTime():
-            schedule_value = schedule_edit.minimumDateTime()
-        if schedule_value > schedule_edit.maximumDateTime():
-            schedule_value = schedule_edit.maximumDateTime()
-        schedule_edit.setDateTime(schedule_value)
-        schedule_check.setChecked(True)
+        for widgets in self.platform_widgets.values():
+            if not widgets.get("supports_schedule"):
+                continue
+            schedule_check = widgets["schedule_check"]
+            schedule_edit = widgets["schedule_edit"]
+            if parsed is None:
+                schedule_check.setChecked(False)
+                continue
+            schedule_value = QtCore.QDateTime(parsed)
+            if schedule_value < schedule_edit.minimumDateTime():
+                schedule_value = schedule_edit.minimumDateTime()
+            if schedule_value > schedule_edit.maximumDateTime():
+                schedule_value = schedule_edit.maximumDateTime()
+            schedule_edit.setDateTime(schedule_value)
+            schedule_check.setChecked(True)
 
     def _draft_by_id(self, draft_id: str) -> PublishDraft | None:
         return next(
@@ -3706,7 +3749,7 @@ class PublishPage(QtWidgets.QWidget):
         self.tags_edit.clear()
         self.draft_status.setText("发布草稿已清空。")
 
-    def run_login_action(self, action: str) -> None:
+    def run_login_action(self, platform_key: str, action: str) -> None:
         if thread_is_running(self.login_thread):
             QtWidgets.QMessageBox.information(
                 self,
@@ -3714,23 +3757,26 @@ class PublishPage(QtWidgets.QWidget):
                 "请先完成当前登录或检测操作。",
             )
             return
+        platform_name = PLATFORMS[platform_key].name
         labels = {
-            "login": "正在打开小红书扫码登录页...",
-            "check": "正在检测小红书登录状态...",
-            "clear": "正在清除小红书登录状态...",
+            "login": f"正在打开{platform_name}扫码登录页...",
+            "check": f"正在检测{platform_name}登录状态...",
+            "clear": f"正在清除{platform_name}登录状态...",
         }
-        login_status = self.platform_widgets["xiaohongshu"]["login_status"]
+        login_status = self.platform_widgets[platform_key]["login_status"]
         login_status.setText(labels.get(action, "处理中..."))
-        browser_name = self.platform_widgets["xiaohongshu"][
+        browser_name = self.platform_widgets[platform_key][
             "browser_combo"
         ].currentData()
-        self.login_thread = XiaohongshuLoginThread(
+        self.login_thread = PlatformLoginThread(
+            platform_key,
             action,
             str(browser_name or "edge"),
             self,
         )
         self.login_thread.result.connect(
-            lambda success, message, action=action: self._on_login_result(
+            lambda success, message, key=platform_key, action=action: self._on_login_result(
+                key,
                 action,
                 success,
                 message,
@@ -3747,18 +3793,20 @@ class PublishPage(QtWidgets.QWidget):
 
     def _on_login_result(
         self,
+        platform_key: str,
         action: str,
         success: bool,
         message: str,
     ) -> None:
-        login_status = self.platform_widgets["xiaohongshu"]["login_status"]
+        platform_name = PLATFORMS[platform_key].name
+        login_status = self.platform_widgets[platform_key]["login_status"]
         if action == "clear" and success:
             state = "未登录"
         elif action == "clear":
             state = "状态未知"
         else:
             state = "已登录" if success else "未登录"
-        login_status.setText(f"小红书登录状态：{state}。{message}")
+        login_status.setText(f"{platform_name}登录状态：{state}。{message}")
         self.status_label.setText(message)
 
     def add_media(self) -> None:
@@ -3875,12 +3923,13 @@ class PublishPage(QtWidgets.QWidget):
             return
 
         widgets = self.platform_widgets[key]
-        if key == "xiaohongshu":
+        target = ""
+        if key in {"xiaohongshu", "douyin"}:
             draft = self._draft_by_id(self.current_draft_id)
-            xhs_widgets = self.platform_widgets["xiaohongshu"]
-            schedule_check = xhs_widgets["schedule_check"]
+            platform_widgets = self.platform_widgets[key]
+            schedule_check = platform_widgets["schedule_check"]
             schedule_at = (
-                xhs_widgets["schedule_edit"].dateTime().toString(
+                platform_widgets["schedule_edit"].dateTime().toString(
                     "yyyy-MM-dd HH:mm"
                 )
                 if schedule_check.isChecked()
@@ -3894,11 +3943,12 @@ class PublishPage(QtWidgets.QWidget):
                 "tags": post.tags,
                 "keep_open": True,
                 "browser_name": str(
-                    xhs_widgets["browser_combo"].currentData() or "edge"
+                    platform_widgets["browser_combo"].currentData() or "edge"
                 ),
                 "auto_publish": False,
                 "schedule_at": schedule_at,
             }
+            target = key
         else:
             params = {
                 "platform_key": key,
@@ -3908,7 +3958,7 @@ class PublishPage(QtWidgets.QWidget):
                 "keep_open": True,
             }
         self.status_label.setText(f"正在打开{PLATFORMS[key].name}并尝试上传，最终发布请手动点击")
-        self.assist_thread = PublishAssistThread(params, self)
+        self.assist_thread = PublishAssistThread(params, target, self)
         self.assist_thread.progress.connect(self.status_label.setText)
         self.assist_thread.result.connect(self._on_assist_result)
         self.assist_thread.error.connect(self._on_assist_error)

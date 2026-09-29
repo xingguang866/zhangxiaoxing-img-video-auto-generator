@@ -28,11 +28,15 @@ from app import (
 from batch_parser import BatchItem, create_batch_template, load_batch_items
 from batch_publish_ui import BatchPublishQueueDialog
 from browser_assistant import (
+    _append_douyin_tags,
     _commit_input_value,
+    _configure_douyin_schedule,
     _configure_xiaohongshu_schedule,
     _find_xiaohongshu_publish_button,
     _fill_field,
+    _fill_tiptap_body,
     _upload_files,
+    _verify_douyin_fields,
     _wait_for_xiaohongshu_publish_result,
 )
 from jianying_service import create_jianying_draft
@@ -719,6 +723,43 @@ class CoreTests(unittest.TestCase):
                 self.assertTrue(_wait_for_xiaohongshu_publish_result(page))
                 browser.close()
 
+    def test_douyin_form_helpers_fill_local_page(self):
+        fixture = self.root / "tests" / "fixtures" / "douyin_publish.html"
+        with tempfile.TemporaryDirectory() as temp:
+            video = Path(temp) / "note.mp4"
+            video.write_bytes(b"not-a-real-video")
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(
+                    channel="msedge",
+                    headless=True,
+                )
+                page = browser.new_page()
+                page.goto(fixture.as_uri(), wait_until="domcontentloaded")
+                uploaded = _upload_files(page, [video], accept_contains="video")
+                title_input = page.locator('input[placeholder*="作品标题"]')
+                title_filled = _commit_input_value(title_input, "抖音测试标题")
+                body = page.locator("#body")
+                body_filled = _fill_tiptap_body(page, body, "抖音测试正文")
+                tags_filled = _append_douyin_tags(page, ["肛周护理", "健康科普"])
+                scheduled, schedule_at = _configure_douyin_schedule(
+                    page,
+                    "2026-09-30 11:30",
+                )
+                self.assertEqual(uploaded, 1)
+                self.assertTrue(title_filled)
+                self.assertTrue(body_filled)
+                self.assertEqual(tags_filled, 2)
+                self.assertTrue(scheduled)
+                self.assertEqual(schedule_at, "2026-09-30 11:30")
+                _verify_douyin_fields(
+                    page,
+                    title="抖音测试标题",
+                    description="抖音测试正文",
+                    tags=["肛周护理", "健康科普"],
+                    schedule_at="2026-09-30 11:30",
+                )
+                browser.close()
+
     def test_mock_image_and_video_pipeline(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp)
@@ -1112,7 +1153,12 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(schedule_edit.isEnabled())
         schedule_check.setChecked(True)
         self.assertTrue(schedule_edit.isEnabled())
+        douyin_widgets = window.publish_page.platform_widgets["douyin"]
+        self.assertEqual(douyin_widgets["browser_combo"].count(), 2)
+        self.assertTrue(douyin_widgets["supports_schedule"])
+        self.assertTrue(douyin_widgets["schedule_check"].isEnabled())
         window.publish_page._on_login_result(
+            "xiaohongshu",
             "clear",
             True,
             "小红书独立浏览器配置已清除。",
@@ -1120,6 +1166,18 @@ class CoreTests(unittest.TestCase):
         self.assertIn(
             "未登录",
             window.publish_page.platform_widgets["xiaohongshu"][
+                "login_status"
+            ].text(),
+        )
+        window.publish_page._on_login_result(
+            "douyin",
+            "clear",
+            True,
+            "抖音独立浏览器配置已清除。",
+        )
+        self.assertIn(
+            "未登录",
+            window.publish_page.platform_widgets["douyin"][
                 "login_status"
             ].text(),
         )
