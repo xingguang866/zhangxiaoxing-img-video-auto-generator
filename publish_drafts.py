@@ -20,6 +20,10 @@ class PublishDraft:
     tags: list[str] = field(default_factory=list)
     cover_path: str = ""
     scheduled_at: str = ""
+    douyin_music_enabled: bool = False
+    douyin_music_tab: str = "推荐"
+    douyin_music_query: str = ""
+    douyin_music_index: int = 1
     fingerprint: str = ""
     validation_errors: list[str] = field(default_factory=list)
     validation_warnings: list[str] = field(default_factory=list)
@@ -42,4 +46,3 @@ class PublishDraft:
     def from_dict(cls, value: dict) -> "PublishDraft":
         allowed = {item.name for item in fields(cls)}
         return cls(**{key: item for key, item in value.items() if key in allowed})
-

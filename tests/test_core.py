@@ -35,9 +35,13 @@ from browser_assistant import (
     _find_xiaohongshu_publish_button,
     _fill_field,
     _fill_tiptap_body,
+    _open_douyin_music_panel,
+    _read_douyin_music_items,
     _upload_files,
     _verify_douyin_fields,
     _wait_for_xiaohongshu_publish_result,
+    read_douyin_hot_music,
+    select_douyin_music,
 )
 from jianying_service import create_jianying_draft
 from hypit_service import (
@@ -750,12 +754,28 @@ class CoreTests(unittest.TestCase):
                     page,
                     "2026-09-30 11:30",
                 )
+                _open_douyin_music_panel(page)
+                music_items = _read_douyin_music_items(page)
+                selected_music = select_douyin_music(
+                    page,
+                    tab="热门榜",
+                    query="阳光",
+                    index=1,
+                )
                 self.assertEqual(uploaded, 1)
                 self.assertTrue(title_filled)
                 self.assertTrue(body_filled)
                 self.assertEqual(tags_filled, 2)
                 self.assertTrue(scheduled)
                 self.assertEqual(schedule_at, "2026-09-30 11:30")
+                self.assertEqual(len(music_items), 2)
+                self.assertEqual(selected_music["name"], "阳光总在风雨后")
+                self.assertEqual(
+                    page.locator("#selected-music").inner_text(),
+                    "阳光总在风雨后",
+                )
+                hot_music = read_douyin_hot_music(page, tab="热门榜")
+                self.assertEqual(len(hot_music), 2)
                 _verify_douyin_fields(
                     page,
                     title="抖音测试标题",
@@ -1162,6 +1182,9 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(douyin_widgets["browser_combo"].count(), 2)
         self.assertTrue(douyin_widgets["supports_schedule"])
         self.assertTrue(douyin_widgets["schedule_check"].isEnabled())
+        self.assertIsNotNone(douyin_widgets["music_check"])
+        self.assertEqual(douyin_widgets["music_tab_combo"].count(), 5)
+        self.assertTrue(douyin_widgets["music_query_edit"].placeholderText())
         window.publish_page._on_login_result(
             "xiaohongshu",
             "clear",

@@ -18,6 +18,41 @@
       contenteditable="true"
       data-placeholder="添加作品描述"
     ></div>
+    <div class="preview-button-test">
+      <div>添加音乐</div>
+    </div>
+    <div id="music-panel" hidden>
+      <input placeholder="搜索音乐">
+      <button type="button">推荐</button>
+      <button type="button">热门榜</button>
+      <div class="card-wrapper-test">
+        <div class="song-name-test">阳光总在风雨后</div>
+        <div class="song-author-test">测试歌手</div>
+        <div class="song-duration-test">01:20</div>
+        <div class="user-count-test">100.0万人使用</div>
+        <button type="button" class="apply-button">使用</button>
+      </div>
+      <div class="card-wrapper-test">
+        <div class="song-name-test">温柔生活</div>
+        <div class="song-author-test">轻柔音乐</div>
+        <div class="song-duration-test">02:00</div>
+        <div class="user-count-test">50.0万人使用</div>
+        <button type="button" class="apply-button">使用</button>
+      </div>
+    </div>
+    <div id="selected-music"></div>
     <button type="button">发布</button>
+    <script>
+      document.querySelector(".preview-button-test").addEventListener("click", () => {
+        document.querySelector("#music-panel").hidden = false;
+      });
+      document.querySelectorAll(".apply-button").forEach((button, index) => {
+        button.addEventListener("click", () => {
+          const card = button.closest(".card-wrapper-test");
+          document.querySelector("#selected-music").textContent =
+            card.querySelector(".song-name-test").textContent;
+        });
+      });
+    </script>
   </body>
 </html>

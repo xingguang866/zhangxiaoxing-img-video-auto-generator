@@ -3230,6 +3230,10 @@ class PublishPage(QtWidgets.QWidget):
             title = QtWidgets.QLineEdit()
             title.setPlaceholderText("平台标题")
             title.setMaxLength(profile.title_limit)
+            music_check = None
+            music_tab_combo = None
+            music_query_edit = None
+            music_index_spin = None
             description = QtWidgets.QPlainTextEdit()
             description.setPlaceholderText("平台简介或正文")
             tags = QtWidgets.QLineEdit()
@@ -3299,6 +3303,36 @@ class PublishPage(QtWidgets.QWidget):
                         "软件只填写定时时间和发布内容，最终发布按钮仍由你手动点击。"
                     )
                 )
+                if key == "douyin":
+                    layout.addWidget(section_label("抖音热门音乐"))
+                    music_check = QtWidgets.QCheckBox("使用抖音热门音乐")
+                    music_tab_combo = QtWidgets.QComboBox()
+                    music_tab_combo.addItems(
+                        ["推荐", "热门榜", "飙升榜", "原创榜", "收藏"]
+                    )
+                    music_query_edit = QtWidgets.QLineEdit()
+                    music_query_edit.setPlaceholderText(
+                        "歌曲关键词，可留空"
+                    )
+                    music_index_spin = QtWidgets.QSpinBox()
+                    music_index_spin.setRange(1, 100)
+                    music_index_spin.setValue(1)
+                    layout.addWidget(music_check)
+                    music_row = QtWidgets.QHBoxLayout()
+                    music_row.addWidget(QtWidgets.QLabel("榜单"))
+                    music_row.addWidget(music_tab_combo, 1)
+                    music_row.addWidget(QtWidgets.QLabel("第"))
+                    music_row.addWidget(music_index_spin)
+                    music_row.addWidget(QtWidgets.QLabel("首"))
+                    layout.addLayout(music_row)
+                    layout.addWidget(QtWidgets.QLabel("搜索音乐"))
+                    layout.addWidget(music_query_edit)
+                    layout.addWidget(
+                        hint_label(
+                            "辅助上传时会在抖音官方音乐面板中查找并点击“使用”。"
+                            "填写关键词时优先匹配歌曲名或作者。"
+                        )
+                    )
                 layout.addWidget(section_label("发布内容"))
             layout.addWidget(QtWidgets.QLabel("标题"))
             layout.addWidget(title)
@@ -3325,6 +3359,10 @@ class PublishPage(QtWidgets.QWidget):
                 "schedule_check": schedule_check,
                 "schedule_edit": schedule_edit,
                 "supports_schedule": key in {"xiaohongshu", "douyin"},
+                "music_check": music_check,
+                "music_tab_combo": music_tab_combo,
+                "music_query_edit": music_query_edit,
+                "music_index_spin": music_index_spin,
             }
             self.tabs.addTab(page, profile.name)
         self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
@@ -3659,6 +3697,22 @@ class PublishPage(QtWidgets.QWidget):
         self.media_list.clear()
         for path in draft.media_paths:
             self.media_list.addItem(path)
+        douyin_widgets = self.platform_widgets["douyin"]
+        if douyin_widgets["music_check"] is not None:
+            video_draft = draft.media_type == "video"
+            douyin_widgets["music_check"].setEnabled(video_draft)
+            douyin_widgets["music_check"].setChecked(
+                video_draft and draft.douyin_music_enabled
+            )
+            douyin_widgets["music_tab_combo"].setCurrentText(
+                draft.douyin_music_tab or "推荐"
+            )
+            douyin_widgets["music_query_edit"].setText(
+                draft.douyin_music_query
+            )
+            douyin_widgets["music_index_spin"].setValue(
+                max(1, draft.douyin_music_index)
+            )
         self._apply_draft_schedule(draft)
         self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
         self.status_label.setText(
@@ -3703,6 +3757,21 @@ class PublishPage(QtWidgets.QWidget):
             )
         elif current_widgets.get("supports_schedule"):
             draft.scheduled_at = ""
+        if current_key == "douyin":
+            music_check = current_widgets.get("music_check")
+            if music_check is not None:
+                draft.douyin_music_enabled = (
+                    draft.media_type == "video" and music_check.isChecked()
+                )
+                draft.douyin_music_tab = (
+                    current_widgets["music_tab_combo"].currentText()
+                )
+                draft.douyin_music_query = (
+                    current_widgets["music_query_edit"].text().strip()
+                )
+                draft.douyin_music_index = (
+                    current_widgets["music_index_spin"].value()
+                )
         validate_publish_draft(draft)
         self._refresh_draft_table(select_id=draft.draft_id)
 
@@ -3940,6 +4009,25 @@ class PublishPage(QtWidgets.QWidget):
                 "auto_publish": False,
                 "schedule_at": schedule_at,
             }
+            if key == "douyin":
+                params.update(
+                    {
+                        "music_enabled": bool(
+                            draft
+                            and draft.media_type == "video"
+                            and platform_widgets["music_check"].isChecked()
+                        ),
+                        "music_tab": (
+                            platform_widgets["music_tab_combo"].currentText()
+                        ),
+                        "music_query": (
+                            platform_widgets["music_query_edit"].text().strip()
+                        ),
+                        "music_index": (
+                            platform_widgets["music_index_spin"].value()
+                        ),
+                    }
+                )
             target = key
         else:
             params = {

@@ -848,6 +848,169 @@ def _configure_douyin_schedule(
     return True, value
 
 
+def _open_douyin_music_panel(page: Page) -> None:
+    search = _first_visible(
+        page,
+        ['input[placeholder*="搜索音乐"]'],
+    )
+    if search is not None:
+        return
+    button = page.locator('div[class*="preview-button"]').filter(
+        has_text="添加音乐"
+    ).last
+    if button.count() == 0:
+        button = _first_visible(
+            page,
+            [
+                'div[class*="preview-button"]:has-text("添加音乐")',
+                'text=添加音乐',
+            ],
+        )
+    if button is None:
+        raise RuntimeError("没有找到抖音“添加音乐”按钮。")
+    try:
+        button.click(timeout=5000)
+    except Exception:
+        button.click(force=True, timeout=5000)
+    if _wait_for_any(
+        page,
+        ['input[placeholder*="搜索音乐"]'],
+        timeout_ms=10000,
+    ) is None:
+        raise RuntimeError("抖音音乐选择面板没有打开。")
+
+
+def _click_douyin_music_tab(page: Page, tab: str) -> None:
+    tab = tab.strip() or "推荐"
+    locator = _first_visible(
+        page,
+        [
+            f'text="{tab}"',
+            f'div:has-text("{tab}")',
+        ],
+    )
+    if locator is None:
+        return
+    try:
+        locator.click(timeout=3000)
+        page.wait_for_timeout(1200)
+    except Exception:
+        pass
+
+
+def _read_douyin_music_items(page: Page, *, limit: int = 50) -> list[dict]:
+    items = page.locator('div[class*="card-wrapper"]')
+    count = min(items.count(), max(1, limit))
+    result: list[dict] = []
+    for index in range(count):
+        item = items.nth(index)
+        try:
+            name_locator = item.locator('[class*="song-name"]').first
+            author_locator = item.locator('[class*="song-author"]').first
+            duration_locator = item.locator('[class*="song-duration"]').first
+            usage_locator = item.locator('[class*="user-count"]').first
+            name = (
+                name_locator.inner_text(timeout=1000).strip()
+                if name_locator.count()
+                else ""
+            )
+            author = (
+                author_locator.inner_text(timeout=1000).strip()
+                if author_locator.count()
+                else ""
+            )
+            duration = (
+                duration_locator.inner_text(timeout=1000).strip()
+                if duration_locator.count()
+                else ""
+            )
+            usage = (
+                usage_locator.inner_text(timeout=1000).strip()
+                if usage_locator.count()
+                else ""
+            )
+            if name or author:
+                result.append(
+                    {
+                        "index": index + 1,
+                        "name": name,
+                        "author": author,
+                        "duration": duration,
+                        "usage": usage,
+                    }
+                )
+        except Exception:
+            continue
+    return result
+
+
+def read_douyin_hot_music(
+    page: Page,
+    *,
+    tab: str = "推荐",
+    limit: int = 50,
+) -> list[dict]:
+    _open_douyin_music_panel(page)
+    _click_douyin_music_tab(page, tab)
+    return _read_douyin_music_items(page, limit=limit)
+
+
+def select_douyin_music(
+    page: Page,
+    *,
+    tab: str = "推荐",
+    query: str = "",
+    index: int = 1,
+) -> dict:
+    _open_douyin_music_panel(page)
+    _click_douyin_music_tab(page, tab)
+    query = query.strip()
+    if query:
+        search = _first_visible(
+            page,
+            ['input[placeholder*="搜索音乐"]'],
+        )
+        if search is None:
+            raise RuntimeError("没有找到抖音音乐搜索框。")
+        search.click(timeout=3000)
+        search.fill(query, timeout=3000)
+        search.press("Enter")
+        page.wait_for_timeout(2000)
+
+    music_items = _read_douyin_music_items(page, limit=100)
+    if not music_items:
+        raise RuntimeError("抖音音乐列表为空，可能被平台限制或页面尚未加载完成。")
+
+    selected: dict | None = None
+    if query:
+        normalized = query.lower()
+        for item in music_items:
+            haystack = f"{item['name']} {item['author']}".lower()
+            if normalized in haystack:
+                selected = item
+                break
+    if selected is None:
+        target_index = max(1, int(index))
+        if target_index > len(music_items):
+            raise RuntimeError(
+                f"抖音音乐列表只有 {len(music_items)} 首，"
+                f"无法选择第 {target_index} 首。"
+            )
+        selected = music_items[target_index - 1]
+
+    cards = page.locator('div[class*="card-wrapper"]')
+    card = cards.nth(selected["index"] - 1)
+    use_button = card.locator('button:has-text("使用")').first
+    if use_button.count() == 0:
+        use_button = card.locator('button').last
+    try:
+        use_button.click(timeout=5000)
+    except Exception:
+        use_button.click(force=True, timeout=5000)
+    page.wait_for_timeout(1200)
+    return selected
+
+
 def _verify_douyin_fields(
     page: Page,
     *,
@@ -1215,6 +1378,10 @@ def assist_upload_douyin(
     browser_name: str = "edge",
     auto_publish: bool = False,
     schedule_at: str = "",
+    music_enabled: bool = False,
+    music_tab: str = "推荐",
+    music_query: str = "",
+    music_index: int = 1,
     progress: Callable[[str], None] | None = None,
 ) -> dict:
     notify = progress or (lambda _message: None)
@@ -1238,6 +1405,7 @@ def assist_upload_douyin(
             "published": False,
             "scheduled": False,
             "scheduled_at": "",
+            "music_selected": None,
             "message": "",
         }
         try:
@@ -1306,6 +1474,14 @@ def assist_upload_douyin(
                 media_type=media_type,
                 expected_count=result["uploaded_files"],
             )
+            if music_enabled:
+                notify("正在打开抖音官方热门音乐列表...")
+                result["music_selected"] = select_douyin_music(
+                    page,
+                    tab=music_tab,
+                    query=music_query,
+                    index=music_index,
+                )
             notify("素材上传完成，正在填写标题、正文和标签...")
             title_input = _wait_for_any(
                 page,
@@ -1377,6 +1553,12 @@ def assist_upload_douyin(
                 + (
                     f"已设置定时发布：{result['scheduled_at']}。"
                     if result["scheduled"]
+                    else ""
+                )
+                + (
+                    f"已选择音乐：{result['music_selected']['name']} - "
+                    f"{result['music_selected']['author']}。"
+                    if result["music_selected"]
                     else ""
                 )
                 + "请检查预览和内容后，手动点击最终发布。"
