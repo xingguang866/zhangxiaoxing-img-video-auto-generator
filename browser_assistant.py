@@ -797,23 +797,16 @@ def _configure_douyin_schedule(
     switch = _wait_for_any(
         page,
         [
-            'label:has-text("定时发布") input[type="checkbox"]',
-            'div:has-text("定时发布") input[type="checkbox"]',
-            '[class*="switch"]:has-text("定时发布")',
-            'text=定时发布',
+            'label:has-text("定时发布")',
+            'div:has-text("定时发布") label',
+            '[class*="radio"]:has-text("定时发布")',
         ],
         timeout_ms=10000,
     )
     if switch is None:
         raise RuntimeError("抖音页面没有找到“定时发布”开关。")
     try:
-        checkbox = _first_visible(
-            page,
-            [
-                'label:has-text("定时发布") input[type="checkbox"]',
-                'div:has-text("定时发布") input[type="checkbox"]',
-            ],
-        )
+        checkbox = switch.locator('input[type="checkbox"]').first
         if checkbox is not None and not checkbox.is_checked():
             switch.click(force=True)
             page.wait_for_timeout(1000)
@@ -826,6 +819,7 @@ def _configure_douyin_schedule(
     date_input = _wait_for_any(
         page,
         [
+            'input[placeholder*="日期和时间"]',
             'input[placeholder*="选择时间"]',
             'input[placeholder*="发布时间"]',
             'input[placeholder*="请选择"]',
@@ -839,7 +833,6 @@ def _configure_douyin_schedule(
     date_input.click(timeout=3000)
     if not _commit_input_value(date_input, schedule_at):
         raise RuntimeError("抖音定时发布时间没有成功写入页面。")
-    page.keyboard.press("Enter")
     page.wait_for_timeout(800)
     value = str(date_input.input_value() or "").strip()
     if value != schedule_at:
@@ -897,6 +890,7 @@ def _verify_douyin_fields(
     if schedule_at:
         value = ""
         for selector in (
+            'input[placeholder*="日期和时间"]',
             'input[placeholder*="选择时间"]',
             'input[placeholder*="发布时间"]',
             'input[placeholder*="请选择"]',
