@@ -490,6 +490,105 @@ def validate_publish_drafts(
     ]
 
 
+def _publish_fix_advice(message: str) -> str:
+    text = str(message)
+    rules = (
+        ("没有选择图片或视频", "在任务文件夹中放入图片或视频，然后重新导入素材文件夹。"),
+        ("素材文件不存在", "检查文件是否被移动、改名或删除，修正后重新导入素材文件夹。"),
+        ("存在不支持的文件", "将素材转换为 PNG、JPG、JPEG、WEBP、MP4 等支持格式。"),
+        (
+            "视频发布包必须且只能包含 1 个视频",
+            "一个文件夹只放 1 个视频；多个视频请拆成多个任务文件夹。",
+        ),
+        (
+            "图文发布包至少需要 1 张图片",
+            "在任务文件夹中至少放入 1 张图片。",
+        ),
+        (
+            "图文发布包中不能混入视频",
+            "把视频移出该文件夹，或为视频单独建立任务文件夹。",
+        ),
+        (
+            "超过当前建议上限",
+            "减少图片数量，或拆成多条图文发布包。",
+        ),
+        (
+            "标题不能为空",
+            "在 Excel 的“标题”列或发布中心标题框中填写标题。",
+        ),
+        (
+            "缺少标题",
+            "找到 Excel 对应行，在“标题”列填写标题。",
+        ),
+        (
+            "标题",
+            "精简标题，控制在平台建议的标题长度以内。",
+        ),
+        (
+            "正文",
+            "精简正文，控制在平台建议的正文长度以内。",
+        ),
+        (
+            "尚未填写标签",
+            "在 Excel 的“标签”列填写标签，或在发布中心补充标签。",
+        ),
+        (
+            "标签",
+            "减少标签数量，保留最相关的标签。",
+        ),
+        (
+            "计划发布时间早于当前时间",
+            "把定时发布时间改为当前时间以后。",
+        ),
+        (
+            "计划发布时间格式",
+            "按 YYYY-MM-DD HH:MM 格式填写，例如 2026-10-01 10:00。",
+        ),
+        (
+            "缺少内容",
+            "找到 Excel 对应行，在“内容”列填写正文。",
+        ),
+    )
+    for keyword, advice in rules:
+        if keyword in text:
+            return advice
+    return "检查该发布包的素材、标题、内容、标签和定时发布时间后重新校验。"
+
+
+def publish_draft_validation_tooltip(draft: PublishDraft) -> str:
+    errors = list(dict.fromkeys(draft.validation_errors))
+    warnings = list(dict.fromkeys(draft.validation_warnings))
+    if not errors and not warnings:
+        return "校验通过，可以加入批量准备队列。"
+
+    lines: list[str] = []
+    if errors:
+        lines.append("修正原因：")
+        for index, message in enumerate(errors, start=1):
+            lines.append(f"{index}. {message}")
+        lines.append("")
+        lines.append("修正方法：")
+        advice = list(
+            dict.fromkeys(_publish_fix_advice(message) for message in errors)
+        )
+        for index, item in enumerate(advice, start=1):
+            lines.append(f"{index}. {item}")
+    if warnings:
+        if lines:
+            lines.append("")
+        lines.append("提醒：")
+        for index, message in enumerate(warnings, start=1):
+            lines.append(f"{index}. {message}")
+        lines.append("")
+        lines.append("建议处理：")
+        advice = list(
+            dict.fromkeys(_publish_fix_advice(message) for message in warnings)
+        )
+        for index, item in enumerate(advice, start=1):
+            lines.append(f"{index}. {item}")
+    return "\n".join(lines)
+
+
 def dedupe_publish_drafts(
     drafts: list[PublishDraft],
     *,

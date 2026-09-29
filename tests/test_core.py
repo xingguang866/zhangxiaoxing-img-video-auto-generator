@@ -72,6 +72,7 @@ from publish_batch import (
     discover_publish_drafts,
     load_publish_drafts_from_excel,
     load_publish_metadata_from_excel,
+    publish_draft_validation_tooltip,
     validate_publish_draft,
 )
 from publish_queue import PublishQueueEntry, evenly_arranged_entries, run_publish_queue
@@ -536,6 +537,30 @@ class CoreTests(unittest.TestCase):
                     stop_event=threading.Event(),
                 )
         self.assertEqual([entry.status for entry in entries], ["失败", "失败", "已暂停"])
+
+    def test_publish_validation_tooltip_shows_reason_and_fix(self):
+        draft = PublishDraft(
+            source_page="测试",
+            media_paths=[],
+            media_type="image",
+            title="",
+            scheduled_at="错误时间",
+        )
+        validate_publish_draft(draft)
+        tooltip = publish_draft_validation_tooltip(draft)
+        self.assertIn("修正原因", tooltip)
+        self.assertIn("修正方法", tooltip)
+        self.assertIn("没有选择图片或视频", tooltip)
+        self.assertIn("标题不能为空", tooltip)
+        self.assertIn("YYYY-MM-DD HH:MM", tooltip)
+
+        window = MainWindow()
+        window.publish_page.add_drafts([draft])
+        self.app.processEvents()
+        status_item = window.publish_page.draft_table.item(0, 3)
+        self.assertIn("修正原因", status_item.toolTip())
+        self.assertIn("修正方法", status_item.toolTip())
+        window.close()
 
     def test_generation_pages_have_publish_entry_buttons(self):
         window = MainWindow()

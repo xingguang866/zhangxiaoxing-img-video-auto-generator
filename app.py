@@ -69,6 +69,7 @@ from publish_batch import (
     dedupe_publish_drafts,
     discover_publish_drafts,
     load_publish_metadata_from_excel,
+    publish_draft_validation_tooltip,
     validate_publish_draft,
     validate_publish_drafts,
 )
@@ -3183,6 +3184,7 @@ class PublishPage(QtWidgets.QWidget):
             ]
             for column, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(value)
+                item.setToolTip(publish_draft_validation_tooltip(draft))
                 if column == 0:
                     item.setData(QtCore.Qt.ItemDataRole.UserRole, draft.draft_id)
                 if column in {0, 2, 3}:
