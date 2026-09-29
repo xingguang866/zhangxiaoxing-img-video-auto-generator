@@ -461,10 +461,6 @@ def _upload_files(
             try:
                 for index in range(count):
                     locator = inputs.nth(index)
-                    if accept_contains:
-                        accept = str(locator.get_attribute("accept") or "").lower()
-                        if accept_contains.lower() not in accept:
-                            continue
                     locator.set_input_files(paths[0], timeout=5000)
                     return 1
             except Exception:
@@ -1284,28 +1280,31 @@ def assist_upload_douyin(
                 except Exception:
                     pass
 
-            accept_filter = ".mp4" if media_type == "video" else ".jpg"
-            input_ready = _wait_for_any(
-                page,
-                [
-                    f'input[type="file"][accept*="{accept_filter}"]',
-                    'input[type="file"]',
-                ],
-                timeout_ms=15000,
-                require_visible=False,
-            )
-            if input_ready is None:
-                raise RuntimeError(
-                    f"没有找到抖音{mode_text}的文件上传控件。"
-                )
+            accept_filter = "video" if media_type == "video" else "image"
             notify(f"正在上传{len(existing)}个素材...")
-            result["uploaded_files"] = _upload_files(
-                page,
-                existing,
-                accept_contains=accept_filter,
-            )
+            click_selectors = [
+                f'text=上传{"视频" if media_type == "video" else "图文"}',
+                "text=点击上传",
+                'button:has-text("上传")',
+                '[class*="upload"]',
+                '[class*="drag"]',
+            ]
+            for attempt in range(2):
+                result["uploaded_files"] = _upload_files(
+                    page,
+                    existing,
+                    accept_contains=accept_filter,
+                    click_selectors=click_selectors,
+                )
+                if result["uploaded_files"]:
+                    break
+                if attempt == 0:
+                    page.wait_for_timeout(2500)
             if result["uploaded_files"] == 0:
-                raise RuntimeError("没有找到抖音的图片或视频上传控件。")
+                raise RuntimeError(
+                    "抖音页面已打开，但没有找到可用的上传控件。"
+                    "请确认已登录抖音、已进入发布页，并重试一次。"
+                )
 
             notify("素材已提交，正在等待上传完成...")
             _wait_for_douyin_upload_complete(
