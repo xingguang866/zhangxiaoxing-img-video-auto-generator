@@ -429,44 +429,59 @@ def _upload_files(
     media_paths: list[str | Path],
     *,
     accept_contains: str = "",
+    click_selectors: list[str] | None = None,
 ) -> int:
     paths = [str(Path(path)) for path in media_paths if Path(path).exists()]
     if not paths:
         return 0
-    try:
-        inputs = page.locator("input[type=file]")
-        count = inputs.count()
-    except Exception:
-        return 0
-
-    for index in range(count):
-        locator = inputs.nth(index)
+    for frame in page.frames:
         try:
-            accept = str(locator.get_attribute("accept") or "").lower()
-            if accept_contains and accept_contains.lower() not in accept:
-                continue
-            multiple = locator.get_attribute("multiple")
-            if multiple is not None:
-                locator.set_input_files(paths, timeout=5000)
-                return len(paths)
-            if len(paths) == 1:
-                locator.set_input_files(paths[0], timeout=5000)
-                return 1
+            inputs = frame.locator("input[type=file]")
+            count = inputs.count()
         except Exception:
             continue
 
-    if count:
+        for index in range(count):
+            locator = inputs.nth(index)
+            try:
+                accept = str(locator.get_attribute("accept") or "").lower()
+                if accept_contains and accept_contains.lower() not in accept:
+                    continue
+                multiple = locator.get_attribute("multiple")
+                if multiple is not None:
+                    locator.set_input_files(paths, timeout=5000)
+                    return len(paths)
+                if len(paths) == 1:
+                    locator.set_input_files(paths[0], timeout=5000)
+                    return 1
+            except Exception:
+                continue
+
+        if count:
+            try:
+                for index in range(count):
+                    locator = inputs.nth(index)
+                    if accept_contains:
+                        accept = str(locator.get_attribute("accept") or "").lower()
+                        if accept_contains.lower() not in accept:
+                            continue
+                    locator.set_input_files(paths[0], timeout=5000)
+                    return 1
+            except Exception:
+                continue
+
+    for click_selector in click_selectors or []:
+        locator = _first_visible(page, [click_selector])
+        if locator is None:
+            continue
         try:
-            for index in range(count):
-                locator = inputs.nth(index)
-                if accept_contains:
-                    accept = str(locator.get_attribute("accept") or "").lower()
-                    if accept_contains.lower() not in accept:
-                        continue
-                locator.set_input_files(paths[0], timeout=5000)
-                return 1
+            with page.expect_file_chooser(timeout=8000) as chooser_info:
+                locator.click(timeout=3000)
+            chooser = chooser_info.value
+            chooser.set_files(paths)
+            return len(paths)
         except Exception:
-            return 0
+            continue
     return 0
 
 
@@ -1074,6 +1089,13 @@ def assist_upload_xiaohongshu(
                 page,
                 existing,
                 accept_contains=accept_filter,
+                click_selectors=[
+                    f'text=上传{"视频" if media_type == "video" else "图文"}',
+                    "text=点击上传",
+                    'button:has-text("上传")',
+                    '[class*="upload"]',
+                    '[class*="drag"]',
+                ],
             )
             if result["uploaded_files"] == 0:
                 raise RuntimeError("没有找到小红书的图片或视频上传控件。")

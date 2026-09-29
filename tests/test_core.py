@@ -396,8 +396,13 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(window.publish_page.draft_combo.count(), 2)
             self.assertEqual(window.publish_page.media_list.count(), 1)
             self.assertEqual(window.publish_page.title_edit.text(), "视频发布草稿")
-            self.assertTrue(window.publish_page.platform_checks["xiaohongshu"].isChecked())
-            self.assertFalse(window.publish_page.platform_checks["douyin"].isChecked())
+            self.assertFalse(hasattr(window.publish_page, "platform_checks"))
+            self.assertTrue(
+                all(
+                    window.publish_page.tabs.isTabEnabled(index)
+                    for index in range(window.publish_page.tabs.count())
+                )
+            )
             xhs_widgets = window.publish_page.platform_widgets["xiaohongshu"]
             self.assertTrue(xhs_widgets["schedule_check"].isChecked())
             self.assertEqual(

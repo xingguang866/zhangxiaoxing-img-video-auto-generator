@@ -3208,15 +3208,9 @@ class PublishPage(QtWidgets.QWidget):
         media_buttons.addWidget(clear_media, 1, 1)
         side_layout.addLayout(media_buttons)
 
-        side_layout.addWidget(section_label("发布平台"))
-        platform_grid = QtWidgets.QGridLayout()
-        self.platform_checks: dict[str, QtWidgets.QCheckBox] = {}
-        for index, (key, profile) in enumerate(PLATFORMS.items()):
-            checkbox = QtWidgets.QCheckBox(profile.name)
-            checkbox.setChecked(key == "xiaohongshu")
-            self.platform_checks[key] = checkbox
-            platform_grid.addWidget(checkbox, index // 3, index % 3)
-        side_layout.addLayout(platform_grid)
+        side_layout.addWidget(
+            hint_label("平台标签页已全部启用，可直接切换查看和发布。")
+        )
 
         self.status_label = hint_label("准备就绪")
         side_layout.addWidget(self.status_label)
@@ -3665,8 +3659,6 @@ class PublishPage(QtWidgets.QWidget):
         self.media_list.clear()
         for path in draft.media_paths:
             self.media_list.addItem(path)
-        for key, checkbox in self.platform_checks.items():
-            checkbox.setChecked(key == "xiaohongshu")
         self._apply_draft_schedule(draft)
         self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
         self.status_label.setText(
@@ -3851,7 +3843,7 @@ class PublishPage(QtWidgets.QWidget):
         return [Path(self.media_list.item(index).text()) for index in range(self.media_list.count())]
 
     def selected_platforms(self) -> list[str]:
-        return [key for key, checkbox in self.platform_checks.items() if checkbox.isChecked()]
+        return list(PLATFORMS)
 
     def generate_posts(self) -> None:
         self._capture_current_draft()
