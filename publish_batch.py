@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,15 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 MAX_XIAOHONGSHU_IMAGES = 18
+
+
+@dataclass(slots=True)
+class PublishMetadata:
+    title: str = ""
+    description: str = ""
+    tags: list[str] = field(default_factory=list)
+    scheduled_at: str = ""
+    errors: list[str] = field(default_factory=list)
 
 
 def _natural_key(path: Path) -> list[object]:
@@ -222,6 +232,73 @@ def _rows_from_excel(path: Path) -> list[dict[str, object]]:
         return result
     finally:
         workbook.close()
+
+
+def load_publish_metadata_from_excel(path: str | Path) -> list[PublishMetadata]:
+    excel_path = Path(path).resolve()
+    if excel_path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        raise ValueError("批量发布仅支持 .xlsx 或 .xlsm 文件。")
+    rows = _rows_from_excel(excel_path)
+    metadata_rows: list[PublishMetadata] = []
+    for row_number, row in enumerate(rows, start=2):
+        title = _row_value(row, ("标题", "视频主题", "主题", "title"))
+        description = _row_value(
+            row,
+            ("内容", "正文", "简介", "文案", "description"),
+        )
+        raw_tags = _row_value(row, ("标签", "标签关键词", "关键词", "tags"))
+        scheduled_at = _row_value(
+            row,
+            ("定时发布时间", "计划发布时间", "发布时间", "schedule_at"),
+        )
+        if not any((title, description, raw_tags, scheduled_at)):
+            continue
+        errors: list[str] = []
+        if not title:
+            errors.append(f"Excel 第 {row_number} 行缺少标题。")
+        if not description:
+            errors.append(f"Excel 第 {row_number} 行缺少内容。")
+        if scheduled_at:
+            try:
+                datetime.strptime(scheduled_at, "%Y-%m-%d %H:%M")
+            except ValueError:
+                errors.append(
+                    f"Excel 第 {row_number} 行定时发布时间格式错误，"
+                    "应为 YYYY-MM-DD HH:MM。"
+                )
+        metadata_rows.append(
+            PublishMetadata(
+                title=title,
+                description=description,
+                tags=normalize_tags(raw_tags, 10),
+                scheduled_at=scheduled_at,
+                errors=errors,
+            )
+        )
+    return metadata_rows
+
+
+def apply_publish_metadata(
+    drafts: list[PublishDraft],
+    metadata_rows: list[PublishMetadata],
+) -> list[PublishDraft]:
+    if not drafts:
+        raise ValueError("请先导入素材文件夹，再导入发布 Excel。")
+    for draft, metadata in zip(drafts, metadata_rows):
+        if metadata.title:
+            draft.title = metadata.title
+        if metadata.description:
+            draft.description = metadata.description
+        draft.tags = list(metadata.tags)
+        draft.scheduled_at = metadata.scheduled_at
+        draft.validation_errors = list(metadata.errors)
+        validate_publish_draft(draft)
+        if metadata.errors:
+            draft.validation_errors = list(
+                dict.fromkeys(metadata.errors + draft.validation_errors)
+            )
+            draft.status = "需修正"
+    return drafts
 
 
 def load_publish_drafts_from_excel(
@@ -440,22 +517,9 @@ def create_publish_batch_template(path: str | Path) -> Path:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "批量发布"
+    sheet.append(["标题", "内容", "标签", "定时发布时间"])
     sheet.append(
         [
-            "类型",
-            "素材路径",
-            "封面路径",
-            "标题",
-            "正文",
-            "标签",
-            "计划发布时间",
-        ]
-    )
-    sheet.append(
-        [
-            "图文",
-            "D:/素材/笔记01",
-            "D:/素材/笔记01/01_封面.png",
             "久坐党别忽略这件事",
             "1、减少长时间久坐\n2、如厕不刷手机\n3、做好轻柔清洁",
             "肛周护理 久坐党 健康科普",
@@ -464,9 +528,6 @@ def create_publish_batch_template(path: str | Path) -> Path:
     )
     sheet.append(
         [
-            "视频",
-            "D:/素材/视频01.mp4",
-            "D:/素材/视频01_封面.jpg",
             "三个日常护理习惯",
             "日常养护从减少反复摩擦开始。",
             "肛周护理 健康生活",
@@ -474,13 +535,10 @@ def create_publish_batch_template(path: str | Path) -> Path:
         ]
     )
     for column, width in {
-        "A": 12,
-        "B": 42,
-        "C": 42,
-        "D": 30,
-        "E": 56,
-        "F": 30,
-        "G": 20,
+        "A": 30,
+        "B": 56,
+        "C": 30,
+        "D": 20,
     }.items():
         sheet.column_dimensions[column].width = width
     workbook.save(target)

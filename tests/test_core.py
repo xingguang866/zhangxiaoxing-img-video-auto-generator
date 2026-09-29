@@ -66,10 +66,12 @@ from pricing_utils import format_pricing, format_usage
 from publish_platforms import PLATFORMS, build_platform_posts
 from publish_drafts import PublishDraft, new_publish_draft_id
 from publish_batch import (
+    apply_publish_metadata,
     create_publish_batch_template,
     dedupe_publish_drafts,
     discover_publish_drafts,
     load_publish_drafts_from_excel,
+    load_publish_metadata_from_excel,
     validate_publish_draft,
 )
 from publish_queue import PublishQueueEntry, evenly_arranged_entries, run_publish_queue
@@ -451,6 +453,53 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(
                 any("只能包含 1 个视频" in error for error in draft.validation_errors)
             )
+
+    def test_publish_metadata_excel_maps_by_row_order(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in ("笔记01", "笔记02"):
+                folder = root / name
+                folder.mkdir()
+                (folder / "00_封面.png").write_bytes(b"image")
+
+            drafts = discover_publish_drafts(root)
+            self.assertEqual(len(drafts), 2)
+
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["标题", "内容", "标签", "定时发布时间"])
+            sheet.append(
+                [
+                    "第一行标题",
+                    "第一行内容",
+                    "肛周护理 健康科普",
+                    "2026-10-01 10:00",
+                ]
+            )
+            sheet.append(
+                [
+                    "第二行标题",
+                    "第二行内容",
+                    "久坐党 健康生活",
+                    "2026-10-01 20:00",
+                ]
+            )
+            excel_path = root / "发布文案.xlsx"
+            workbook.save(excel_path)
+
+            metadata_rows = load_publish_metadata_from_excel(excel_path)
+            self.assertEqual(len(metadata_rows), 2)
+            apply_publish_metadata(drafts, metadata_rows)
+            self.assertEqual(
+                [draft.title for draft in drafts],
+                ["第一行标题", "第二行标题"],
+            )
+            self.assertEqual(
+                [draft.description for draft in drafts],
+                ["第一行内容", "第二行内容"],
+            )
+            self.assertEqual(drafts[0].tags, ["肛周护理", "健康科普"])
+            self.assertEqual(drafts[1].scheduled_at, "2026-10-01 20:00")
 
     def test_publish_queue_pauses_after_two_consecutive_failures(self):
         scheduled_at = datetime.now() - timedelta(minutes=2)

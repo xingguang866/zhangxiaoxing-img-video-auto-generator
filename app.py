@@ -64,10 +64,11 @@ from prompts import (
 from publish_platforms import PLATFORMS, PlatformPost, build_platform_posts
 from publish_drafts import PublishDraft, new_publish_draft_id
 from publish_batch import (
+    apply_publish_metadata,
     create_publish_batch_template,
     dedupe_publish_drafts,
     discover_publish_drafts,
-    load_publish_drafts_from_excel,
+    load_publish_metadata_from_excel,
     validate_publish_draft,
     validate_publish_drafts,
 )
@@ -2942,6 +2943,9 @@ class PublishPage(QtWidgets.QWidget):
             button.setObjectName("secondaryButton")
         import_folder_button.clicked.connect(self.import_publish_folder)
         import_excel_button.clicked.connect(self.import_publish_excel)
+        import_excel_button.setToolTip(
+            "先导入素材文件夹，再按 Excel 行顺序补充标题、内容、标签和定时发布时间。"
+        )
         publish_template_button.clicked.connect(self.download_publish_template)
         self.batch_prepare_button.clicked.connect(self.open_batch_prepare_queue)
         self.stop_batch_prepare_button.clicked.connect(
@@ -3216,6 +3220,14 @@ class PublishPage(QtWidgets.QWidget):
         self._add_imported_drafts(drafts)
 
     def import_publish_excel(self) -> None:
+        if not self.drafts:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "请先导入素材文件夹",
+                "发布 Excel 会按行补充当前发布包。"
+                "请先点击“导入素材文件夹”，再导入 Excel。",
+            )
+            return
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "导入批量发布表",
@@ -3225,11 +3237,54 @@ class PublishPage(QtWidgets.QWidget):
         if not path:
             return
         try:
-            drafts = load_publish_drafts_from_excel(path)
+            metadata_rows = load_publish_metadata_from_excel(path)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "导入失败", str(exc))
             return
-        self._add_imported_drafts(drafts)
+        if not metadata_rows:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Excel 没有数据",
+                "没有读取到标题、内容、标签或定时发布时间。",
+            )
+            return
+        if len(metadata_rows) != len(self.drafts):
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Excel 行数与发布包数量不一致",
+                f"当前发布包 {len(self.drafts)} 个，Excel 有效行 "
+                f"{len(metadata_rows)} 行。\n\n"
+                "软件将按列表顺序匹配共同数量，多余部分不会处理。"
+                "是否继续？",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+
+        if self.current_draft_id:
+            self._capture_current_draft()
+        matched = min(len(self.drafts), len(metadata_rows))
+        apply_publish_metadata(self.drafts, metadata_rows)
+        selected_id = self.current_draft_id or self.drafts[0].draft_id
+        self._refresh_draft_table(select_id=selected_id)
+        self._refresh_draft_combo(select_id=selected_id)
+        error_count = sum(
+            bool(draft.validation_errors)
+            for draft in self.drafts[:matched]
+        )
+        self.draft_status.setText(
+            f"已按 Excel 行顺序补充 {matched} 个发布包，"
+            f"其中 {error_count} 个仍需修正。"
+        )
+        if error_count:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "部分发布包需要修正",
+                f"已匹配 {matched} 个发布包，其中 {error_count} 个存在问题。"
+                "请在发布包列表中检查标题、内容、标签、时间或素材。",
+            )
 
     def _add_imported_drafts(self, drafts: list[PublishDraft]) -> None:
         validated = validate_publish_drafts(drafts)
