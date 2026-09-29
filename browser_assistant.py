@@ -1004,9 +1004,15 @@ def select_douyin_music(
     if use_button.count() == 0:
         use_button = card.locator('button').last
     try:
-        use_button.click(timeout=5000)
+        card.scroll_into_view_if_needed(timeout=3000)
+        card.hover(timeout=3000)
+        page.wait_for_timeout(500)
+        if use_button.is_visible():
+            use_button.click(timeout=5000)
+        else:
+            use_button.evaluate("(button) => button.click()")
     except Exception:
-        use_button.click(force=True, timeout=5000)
+        use_button.evaluate("(button) => button.click()")
     page.wait_for_timeout(1200)
     return selected
 

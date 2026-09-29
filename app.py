@@ -3364,7 +3364,14 @@ class PublishPage(QtWidgets.QWidget):
                 "music_query_edit": music_query_edit,
                 "music_index_spin": music_index_spin,
             }
-            self.tabs.addTab(page, profile.name)
+            scroll_page = QtWidgets.QScrollArea()
+            scroll_page.setWidgetResizable(True)
+            scroll_page.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            scroll_page.setHorizontalScrollBarPolicy(
+                QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
+            scroll_page.setWidget(page)
+            self.tabs.addTab(scroll_page, profile.name)
         self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
         root.addWidget(scrollable_side_card(side))
         root.addWidget(self.tabs, 1)
