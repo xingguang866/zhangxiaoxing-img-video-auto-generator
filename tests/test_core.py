@@ -657,10 +657,8 @@ class CoreTests(unittest.TestCase):
             window.batch_page.send_publish_button.text(),
             "发送到发布中心",
         )
-        self.assertEqual(
-            window.batch_page.batch_publish_button.text(),
-            "批量排队发布小红书",
-        )
+        self.assertFalse(hasattr(window.batch_page, "batch_publish_button"))
+        self.assertFalse(hasattr(window.batch_page, "stop_publish_queue_button"))
         publish_buttons = {
             button.text()
             for button in window.publish_page.findChildren(QtWidgets.QPushButton)
