@@ -64,6 +64,7 @@ from prompts import (
 from publish_platforms import PLATFORMS, PlatformPost, build_platform_posts
 from publish_drafts import PublishDraft, new_publish_draft_id
 from publish_batch import (
+    PUBLISH_SCHEDULE_DISPLAY_FORMAT,
     apply_publish_metadata,
     create_publish_batch_template,
     dedupe_publish_drafts,
@@ -3070,7 +3071,7 @@ class PublishPage(QtWidgets.QWidget):
                 QtCore.QDateTime.currentDateTime().addSecs(3600)
             )
             schedule_edit.setCalendarPopup(True)
-            schedule_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+            schedule_edit.setDisplayFormat(PUBLISH_SCHEDULE_DISPLAY_FORMAT)
             schedule_edit.setMinimumDateTime(
                 QtCore.QDateTime.currentDateTime().addSecs(3600)
             )

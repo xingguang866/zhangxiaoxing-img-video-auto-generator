@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -16,6 +16,11 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 MAX_XIAOHONGSHU_IMAGES = 18
+PUBLISH_SCHEDULE_DISPLAY_FORMAT = "yyyy/M/d H:mm"
+_PUBLISH_SCHEDULE_FORMAT_HINT = (
+    "推荐格式 YYYY/M/D H:mm，例如 2026/10/1 10:00；"
+    "也支持 YYYY-MM-DD HH:mm 和 Excel 日期单元格。"
+)
 
 
 @dataclass(slots=True)
@@ -196,6 +201,11 @@ def discover_publish_drafts(root: str | Path) -> list[PublishDraft]:
 
 
 def _row_value(row: dict[str, object], aliases: tuple[str, ...]) -> str:
+    value = _row_value_raw(row, aliases)
+    return str(value).strip() if value is not None else ""
+
+
+def _row_value_raw(row: dict[str, object], aliases: tuple[str, ...]) -> object:
     normalized = {
         str(key).strip().lower(): value
         for key, value in row.items()
@@ -204,8 +214,56 @@ def _row_value(row: dict[str, object], aliases: tuple[str, ...]) -> str:
     for alias in aliases:
         value = normalized.get(alias.strip().lower())
         if value is not None:
-            return str(value).strip()
-    return ""
+            return value
+    return None
+
+
+def parse_publish_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(second=0, microsecond=0)
+    if isinstance(value, date):
+        return datetime.combine(value, time.min)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = (
+        text.replace("年", "/")
+        .replace("月", "/")
+        .replace("日", "")
+        .strip()
+    )
+    text = re.sub(r"\s+", " ", text)
+    try:
+        return datetime.fromisoformat(text).replace(second=0, microsecond=0)
+    except ValueError:
+        pass
+    formats = (
+        "%Y/%m/%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y.%m.%d %H:%M",
+        "%Y.%m.%d %H:%M:%S",
+        "%Y/%m/%d",
+        "%Y-%m-%d",
+        "%Y.%m.%d",
+    )
+    for schedule_format in formats:
+        try:
+            return datetime.strptime(text, schedule_format)
+        except ValueError:
+            continue
+    return None
+
+
+def normalize_publish_datetime(value: object) -> tuple[str, str]:
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    parsed = parse_publish_datetime(value)
+    if parsed is None:
+        return text, f"定时发布时间格式错误，{_PUBLISH_SCHEDULE_FORMAT_HINT}"
+    return parsed.strftime("%Y-%m-%d %H:%M"), ""
 
 
 def _rows_from_excel(path: Path) -> list[dict[str, object]]:
@@ -247,25 +305,20 @@ def load_publish_metadata_from_excel(path: str | Path) -> list[PublishMetadata]:
             ("内容", "正文", "简介", "文案", "description"),
         )
         raw_tags = _row_value(row, ("标签", "标签关键词", "关键词", "tags"))
-        scheduled_at = _row_value(
+        raw_scheduled_at = _row_value_raw(
             row,
             ("定时发布时间", "计划发布时间", "发布时间", "schedule_at"),
         )
-        if not any((title, description, raw_tags, scheduled_at)):
+        scheduled_at, schedule_error = normalize_publish_datetime(raw_scheduled_at)
+        if not any((title, description, raw_tags, str(raw_scheduled_at or "").strip())):
             continue
         errors: list[str] = []
         if not title:
             errors.append(f"Excel 第 {row_number} 行缺少标题。")
         if not description:
             errors.append(f"Excel 第 {row_number} 行缺少内容。")
-        if scheduled_at:
-            try:
-                datetime.strptime(scheduled_at, "%Y-%m-%d %H:%M")
-            except ValueError:
-                errors.append(
-                    f"Excel 第 {row_number} 行定时发布时间格式错误，"
-                    "应为 YYYY-MM-DD HH:MM。"
-                )
+        if schedule_error:
+            errors.append(f"Excel 第 {row_number} 行{schedule_error}")
         metadata_rows.append(
             PublishMetadata(
                 title=title,
@@ -465,12 +518,16 @@ def validate_publish_draft(
             f"{profile.max_tags} 个，只保留前 {profile.max_tags} 个。"
         )
     if draft.scheduled_at:
-        try:
-            schedule = datetime.strptime(draft.scheduled_at, "%Y-%m-%d %H:%M")
+        normalized_schedule, schedule_error = normalize_publish_datetime(
+            draft.scheduled_at
+        )
+        if schedule_error:
+            errors.append(schedule_error)
+        else:
+            draft.scheduled_at = normalized_schedule
+            schedule = datetime.strptime(normalized_schedule, "%Y-%m-%d %H:%M")
             if schedule < datetime.now():
                 warnings.append("计划发布时间早于当前时间。")
-        except ValueError:
-            errors.append("计划发布时间格式应为 YYYY-MM-DD HH:MM。")
 
     draft.validation_errors = errors
     draft.validation_warnings = warnings
@@ -542,7 +599,8 @@ def _publish_fix_advice(message: str) -> str:
         ),
         (
             "计划发布时间格式",
-            "按 YYYY-MM-DD HH:MM 格式填写，例如 2026-10-01 10:00。",
+            "推荐按 YYYY/M/D H:mm 填写，例如 2026/10/1 10:00；"
+            "也支持 YYYY-MM-DD HH:mm 和 Excel 日期单元格。",
         ),
         (
             "缺少内容",
@@ -622,7 +680,7 @@ def create_publish_batch_template(path: str | Path) -> Path:
             "久坐党别忽略这件事",
             "1、减少长时间久坐\n2、如厕不刷手机\n3、做好轻柔清洁",
             "肛周护理 久坐党 健康科普",
-            "2026-10-01 10:00",
+            "2026/10/1 10:00",
         ]
     )
     sheet.append(
@@ -630,7 +688,7 @@ def create_publish_batch_template(path: str | Path) -> Path:
             "三个日常护理习惯",
             "日常养护从减少反复摩擦开始。",
             "肛周护理 健康生活",
-            "2026-10-01 20:00",
+            "2026/10/1 20:00",
         ]
     )
     for column, width in {

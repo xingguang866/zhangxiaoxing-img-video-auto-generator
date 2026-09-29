@@ -5,6 +5,10 @@ from datetime import datetime, timedelta
 
 from PySide6 import QtCore, QtWidgets
 
+from publish_batch import (
+    PUBLISH_SCHEDULE_DISPLAY_FORMAT,
+    parse_publish_datetime,
+)
 from publish_drafts import PublishDraft
 from publish_queue import (
     PublishQueueEntry,
@@ -12,6 +16,11 @@ from publish_queue import (
     run_publish_queue,
     save_queue_state,
 )
+
+
+def _schedule_qdatetime(value: object) -> QtCore.QDateTime:
+    parsed = parse_publish_datetime(value)
+    return QtCore.QDateTime(parsed) if parsed is not None else QtCore.QDateTime()
 
 
 class BatchPublishQueueThread(QtCore.QThread):
@@ -95,16 +104,13 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
         self.browser_combo.addItem("Google Chrome", "chrome")
         start_at = QtCore.QDateTime.currentDateTime().addSecs(3600)
         for draft in drafts:
-            parsed = QtCore.QDateTime.fromString(
-                draft.scheduled_at,
-                "yyyy-MM-dd HH:mm",
-            )
+            parsed = _schedule_qdatetime(draft.scheduled_at)
             if parsed.isValid() and parsed > QtCore.QDateTime.currentDateTime():
                 start_at = parsed
                 break
         self.start_edit = QtWidgets.QDateTimeEdit(start_at)
         self.start_edit.setCalendarPopup(True)
-        self.start_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.start_edit.setDisplayFormat(PUBLISH_SCHEDULE_DISPLAY_FORMAT)
         self.min_delay_spin = QtWidgets.QSpinBox()
         self.min_delay_spin.setRange(1, 240)
         self.min_delay_spin.setValue(120)
@@ -167,11 +173,8 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
             )
             time_edit = QtWidgets.QDateTimeEdit()
             time_edit.setCalendarPopup(True)
-            time_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
-            parsed_schedule = QtCore.QDateTime.fromString(
-                draft.scheduled_at,
-                "yyyy-MM-dd HH:mm",
-            )
+            time_edit.setDisplayFormat(PUBLISH_SCHEDULE_DISPLAY_FORMAT)
+            parsed_schedule = _schedule_qdatetime(draft.scheduled_at)
             if parsed_schedule.isValid():
                 time_edit.setDateTime(parsed_schedule)
             time_edit.setMinimumDateTime(
@@ -202,10 +205,7 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
         if use_draft_schedules:
             preserved = True
             for index, draft in enumerate(self.drafts):
-                parsed = QtCore.QDateTime.fromString(
-                    draft.scheduled_at,
-                    "yyyy-MM-dd HH:mm",
-                )
+                parsed = _schedule_qdatetime(draft.scheduled_at)
                 if not parsed.isValid():
                     preserved = False
                     break

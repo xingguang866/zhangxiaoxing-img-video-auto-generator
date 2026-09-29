@@ -66,6 +66,7 @@ from pricing_utils import format_pricing, format_usage
 from publish_platforms import PLATFORMS, build_platform_posts
 from publish_drafts import PublishDraft, new_publish_draft_id
 from publish_batch import (
+    PUBLISH_SCHEDULE_DISPLAY_FORMAT,
     apply_publish_metadata,
     create_publish_batch_template,
     dedupe_publish_drafts,
@@ -372,6 +373,14 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(len(dialog.time_edits), 3)
             self.assertFalse(dialog.auto_publish_check.isChecked())
             self.assertEqual(dialog.max_jobs_spin.value(), 2)
+            self.assertEqual(
+                dialog.start_edit.displayFormat(),
+                PUBLISH_SCHEDULE_DISPLAY_FORMAT,
+            )
+            self.assertEqual(
+                dialog.time_edits[0].displayFormat(),
+                PUBLISH_SCHEDULE_DISPLAY_FORMAT,
+            )
             dialog.close()
 
     def test_publish_batch_folder_and_excel_import(self):
@@ -474,7 +483,7 @@ class CoreTests(unittest.TestCase):
                     "第一行标题",
                     "第一行内容",
                     "肛周护理 健康科普",
-                    "2026-10-01 10:00",
+                    "2026/10/1 9:30",
                 ]
             )
             sheet.append(
@@ -482,7 +491,7 @@ class CoreTests(unittest.TestCase):
                     "第二行标题",
                     "第二行内容",
                     "久坐党 健康生活",
-                    "2026-10-01 20:00",
+                    datetime(2026, 10, 1, 20, 0),
                 ]
             )
             excel_path = root / "发布文案.xlsx"
@@ -500,6 +509,7 @@ class CoreTests(unittest.TestCase):
                 ["第一行内容", "第二行内容"],
             )
             self.assertEqual(drafts[0].tags, ["肛周护理", "健康科普"])
+            self.assertEqual(drafts[0].scheduled_at, "2026-10-01 09:30")
             self.assertEqual(drafts[1].scheduled_at, "2026-10-01 20:00")
 
     def test_publish_queue_pauses_after_two_consecutive_failures(self):
@@ -552,7 +562,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn("修正方法", tooltip)
         self.assertIn("没有选择图片或视频", tooltip)
         self.assertIn("标题不能为空", tooltip)
-        self.assertIn("YYYY-MM-DD HH:MM", tooltip)
+        self.assertIn("YYYY/M/D H:mm", tooltip)
+        self.assertIn("Excel 日期单元格", tooltip)
 
         window = MainWindow()
         window.publish_page.add_drafts([draft])
