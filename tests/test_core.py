@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtWidgets
+from openpyxl import Workbook
 from playwright.sync_api import sync_playwright
 
 from api_client import APIClientError, APIConfig, APIMartClient
@@ -63,7 +65,14 @@ from mock_engine import create_video_thumbnail, generate_mock_image, generate_mo
 from pricing_utils import format_pricing, format_usage
 from publish_platforms import PLATFORMS, build_platform_posts
 from publish_drafts import PublishDraft, new_publish_draft_id
-from publish_queue import evenly_arranged_entries
+from publish_batch import (
+    create_publish_batch_template,
+    dedupe_publish_drafts,
+    discover_publish_drafts,
+    load_publish_drafts_from_excel,
+    validate_publish_draft,
+)
+from publish_queue import PublishQueueEntry, evenly_arranged_entries, run_publish_queue
 from prompts import STYLE_PROMPTS, build_cover_prompt, build_image_prompt
 
 
@@ -358,7 +367,126 @@ class CoreTests(unittest.TestCase):
             dialog = BatchPublishQueueDialog(drafts)
             self.assertEqual(dialog.table.rowCount(), 3)
             self.assertEqual(len(dialog.time_edits), 3)
+            self.assertFalse(dialog.auto_publish_check.isChecked())
+            self.assertEqual(dialog.max_jobs_spin.value(), 2)
             dialog.close()
+
+    def test_publish_batch_folder_and_excel_import(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image_note = root / "笔记01"
+            image_note.mkdir()
+            (image_note / "02_内容.png").write_bytes(b"image-2")
+            (image_note / "01_封面.png").write_bytes(b"image-1")
+
+            video_note = root / "笔记02"
+            video_note.mkdir()
+            (video_note / "成片.mp4").write_bytes(b"video")
+            (video_note / "封面.jpg").write_bytes(b"cover")
+
+            drafts = discover_publish_drafts(root)
+            self.assertEqual(len(drafts), 2)
+            image_draft = next(draft for draft in drafts if draft.media_type == "image")
+            video_draft = next(draft for draft in drafts if draft.media_type == "video")
+            self.assertTrue(image_draft.media_paths[0].endswith("01_封面.png"))
+            self.assertTrue(video_draft.cover_path.endswith("封面.jpg"))
+            self.assertEqual(video_draft.media_type, "video")
+
+            template = root / "发布模板.xlsx"
+            create_publish_batch_template(template)
+            self.assertTrue(template.exists())
+
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(
+                [
+                    "类型",
+                    "素材路径",
+                    "封面路径",
+                    "标题",
+                    "正文",
+                    "标签",
+                    "计划发布时间",
+                ]
+            )
+            sheet.append(
+                [
+                    "图文",
+                    "笔记01",
+                    "笔记01/01_封面.png",
+                    "批量发布测试",
+                    "第一段\n第二段",
+                    "肛周护理 健康科普",
+                    "2026-10-01 10:00",
+                ]
+            )
+            excel_path = root / "批量发布.xlsx"
+            workbook.save(excel_path)
+
+            imported = load_publish_drafts_from_excel(excel_path)
+            self.assertEqual(len(imported), 1)
+            self.assertEqual(imported[0].title, "批量发布测试")
+            self.assertEqual(imported[0].tags, ["肛周护理", "健康科普"])
+            self.assertEqual(imported[0].status, "已校验")
+
+            unique, duplicates = dedupe_publish_drafts(imported + imported)
+            self.assertEqual(len(unique), 1)
+            self.assertEqual(duplicates, 1)
+
+    def test_publish_batch_validation_rejects_multiple_videos(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            first.write_bytes(b"one")
+            second.write_bytes(b"two")
+            draft = PublishDraft(
+                source_page="测试",
+                media_paths=[str(first), str(second)],
+                media_type="video",
+                title="错误视频包",
+            )
+            validate_publish_draft(draft)
+            self.assertEqual(draft.status, "需修正")
+            self.assertTrue(
+                any("只能包含 1 个视频" in error for error in draft.validation_errors)
+            )
+
+    def test_publish_queue_pauses_after_two_consecutive_failures(self):
+        scheduled_at = datetime.now() - timedelta(minutes=2)
+        drafts = [
+            PublishDraft(
+                source_page="测试",
+                media_paths=[],
+                media_type="image",
+                title=f"失败任务{index}",
+            )
+            for index in range(3)
+        ]
+        entries = [
+            PublishQueueEntry(draft=draft, scheduled_at=scheduled_at)
+            for draft in drafts
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            with (
+                patch(
+                    "publish_queue.assist_upload_xiaohongshu",
+                    side_effect=RuntimeError("模拟失败"),
+                ),
+                patch(
+                    "publish_queue.QUEUE_STATE_PATH",
+                    Path(temp) / "queue.json",
+                ),
+                patch("publish_queue.random.randint", return_value=0),
+            ):
+                run_publish_queue(
+                    entries,
+                    browser_name="edge",
+                    auto_publish=False,
+                    prep_lead_minutes=1,
+                    stop_event=threading.Event(),
+                )
+        self.assertEqual([entry.status for entry in entries], ["失败", "失败", "已暂停"])
 
     def test_generation_pages_have_publish_entry_buttons(self):
         window = MainWindow()
@@ -379,6 +507,15 @@ class CoreTests(unittest.TestCase):
             window.batch_page.batch_publish_button.text(),
             "批量排队发布小红书",
         )
+        publish_buttons = {
+            button.text()
+            for button in window.publish_page.findChildren(QtWidgets.QPushButton)
+        }
+        self.assertIn("导入素材文件夹", publish_buttons)
+        self.assertIn("导入发布 Excel", publish_buttons)
+        self.assertIn("下载发布模板", publish_buttons)
+        self.assertIn("批量准备小红书", publish_buttons)
+        self.assertIn("停止批量准备", publish_buttons)
         window.close()
 
     def test_xiaohongshu_form_helpers_fill_local_page(self):

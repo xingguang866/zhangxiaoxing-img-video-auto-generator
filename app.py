@@ -63,6 +63,14 @@ from prompts import (
 )
 from publish_platforms import PLATFORMS, PlatformPost, build_platform_posts
 from publish_drafts import PublishDraft, new_publish_draft_id
+from publish_batch import (
+    create_publish_batch_template,
+    dedupe_publish_drafts,
+    discover_publish_drafts,
+    load_publish_drafts_from_excel,
+    validate_publish_draft,
+    validate_publish_drafts,
+)
 
 
 APP_TITLE = "张小星图文视频生成器"
@@ -2883,6 +2891,7 @@ class PublishPage(QtWidgets.QWidget):
         self.platform_widgets: dict[str, dict] = {}
         self.assist_thread: PublishAssistThread | None = None
         self.login_thread: XiaohongshuLoginThread | None = None
+        self.batch_prepare_thread: BatchPublishQueueThread | None = None
         self.drafts: list[PublishDraft] = []
         self.current_draft_id = ""
 
@@ -2915,6 +2924,71 @@ class PublishPage(QtWidgets.QWidget):
         side_layout.addLayout(draft_row)
         self.draft_status = hint_label("图文、视频和批量处理生成的素材会显示在这里。")
         side_layout.addWidget(self.draft_status)
+
+        side_layout.addWidget(section_label("批量发布包"))
+        batch_tools = QtWidgets.QGridLayout()
+        import_folder_button = QtWidgets.QPushButton("导入素材文件夹")
+        import_excel_button = QtWidgets.QPushButton("导入发布 Excel")
+        publish_template_button = QtWidgets.QPushButton("下载发布模板")
+        self.batch_prepare_button = QtWidgets.QPushButton("批量准备小红书")
+        self.stop_batch_prepare_button = QtWidgets.QPushButton("停止批量准备")
+        for button in (
+            import_folder_button,
+            import_excel_button,
+            publish_template_button,
+            self.batch_prepare_button,
+            self.stop_batch_prepare_button,
+        ):
+            button.setObjectName("secondaryButton")
+        import_folder_button.clicked.connect(self.import_publish_folder)
+        import_excel_button.clicked.connect(self.import_publish_excel)
+        publish_template_button.clicked.connect(self.download_publish_template)
+        self.batch_prepare_button.clicked.connect(self.open_batch_prepare_queue)
+        self.stop_batch_prepare_button.clicked.connect(
+            self.stop_batch_prepare_queue
+        )
+        self.stop_batch_prepare_button.setEnabled(False)
+        batch_tools.addWidget(import_folder_button, 0, 0)
+        batch_tools.addWidget(import_excel_button, 0, 1)
+        batch_tools.addWidget(publish_template_button, 1, 0, 1, 2)
+        batch_tools.addWidget(self.batch_prepare_button, 2, 0)
+        batch_tools.addWidget(self.stop_batch_prepare_button, 2, 1)
+        side_layout.addLayout(batch_tools)
+
+        self.draft_table = QtWidgets.QTableWidget(0, 4)
+        self.draft_table.setHorizontalHeaderLabels(
+            ["类型", "标题", "素材", "状态"]
+        )
+        self.draft_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.draft_table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.draft_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.draft_table.setFixedHeight(170)
+        self.draft_table.horizontalHeader().setSectionResizeMode(
+            1,
+            QtWidgets.QHeaderView.ResizeMode.Stretch,
+        )
+        self.draft_table.horizontalHeader().setSectionResizeMode(
+            0,
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
+        )
+        self.draft_table.horizontalHeader().setSectionResizeMode(
+            2,
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
+        )
+        self.draft_table.horizontalHeader().setSectionResizeMode(
+            3,
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
+        )
+        self.draft_table.itemSelectionChanged.connect(
+            self._on_draft_table_selection
+        )
+        side_layout.addWidget(self.draft_table)
 
         self.title_edit = QtWidgets.QLineEdit()
         self.title_edit.setPlaceholderText("统一标题")
@@ -3082,12 +3156,247 @@ class PublishPage(QtWidgets.QWidget):
         for draft in drafts:
             if draft.draft_id in existing_ids:
                 continue
+            validate_publish_draft(draft)
             self.drafts.append(draft)
             existing_ids.add(draft.draft_id)
+        self._refresh_draft_table(select_id=drafts[-1].draft_id if drafts else "")
         self._refresh_draft_combo(select_id=drafts[-1].draft_id if drafts else "")
         self.draft_status.setText(
             f"已加入 {len(drafts)} 个发布草稿，共 {len(self.drafts)} 个。"
         )
+
+    def _refresh_draft_table(self, *, select_id: str = "") -> None:
+        self.draft_table.blockSignals(True)
+        self.draft_table.setRowCount(len(self.drafts))
+        selected_row = -1
+        for row, draft in enumerate(self.drafts):
+            type_label = "视频" if draft.media_type == "video" else "图文"
+            values = [
+                type_label,
+                draft.title.strip() or "未命名",
+                str(len(draft.existing_media)),
+                draft.status,
+            ]
+            for column, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(QtCore.Qt.ItemDataRole.UserRole, draft.draft_id)
+                if column in {0, 2, 3}:
+                    item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                self.draft_table.setItem(row, column, item)
+            if draft.draft_id == select_id:
+                selected_row = row
+        if selected_row >= 0:
+            self.draft_table.selectRow(selected_row)
+        self.draft_table.blockSignals(False)
+
+    def _on_draft_table_selection(self) -> None:
+        rows = self.draft_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        if 0 <= row < self.draft_combo.count():
+            if self.current_draft_id:
+                self._capture_current_draft()
+            self.draft_combo.setCurrentIndex(row)
+
+    def import_publish_folder(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "选择批量发布素材目录",
+            str(Path(self.main_window.settings_store.as_dict()["output_dir"])),
+        )
+        if not path:
+            return
+        try:
+            drafts = discover_publish_drafts(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "导入失败", str(exc))
+            return
+        self._add_imported_drafts(drafts)
+
+    def import_publish_excel(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "导入批量发布表",
+            str(Path.home()),
+            "Excel 文件 (*.xlsx *.xlsm)",
+        )
+        if not path:
+            return
+        try:
+            drafts = load_publish_drafts_from_excel(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "导入失败", str(exc))
+            return
+        self._add_imported_drafts(drafts)
+
+    def _add_imported_drafts(self, drafts: list[PublishDraft]) -> None:
+        validated = validate_publish_drafts(drafts)
+        unique, duplicate_count = dedupe_publish_drafts(
+            validated,
+            existing=self.drafts,
+        )
+        if not unique:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有新发布包",
+                "没有发现可加入的发布包，或素材与现有草稿重复。",
+            )
+            return
+        self.add_drafts(unique)
+        error_count = sum(bool(draft.validation_errors) for draft in unique)
+        warning_count = sum(bool(draft.validation_warnings) for draft in unique)
+        message = (
+            f"已导入 {len(unique)} 个发布包；"
+            f"需修正 {error_count} 个，提醒 {warning_count} 个"
+        )
+        if duplicate_count:
+            message += f"，跳过重复 {duplicate_count} 个"
+        self.draft_status.setText(message + "。")
+        if error_count:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "部分发布包需要修正",
+                message + "。请在发布包列表中逐条检查。",
+            )
+
+    def download_publish_template(self) -> None:
+        default_name = str(Path.home() / "张小星批量发布模板.xlsx")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "保存批量发布模板",
+            default_name,
+            "Excel 文件 (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            create_publish_batch_template(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "创建模板失败", str(exc))
+            return
+        self.draft_status.setText(f"已保存批量发布模板：{path}")
+
+    def open_batch_prepare_queue(self) -> None:
+        if thread_is_running(self.batch_prepare_thread):
+            QtWidgets.QMessageBox.information(
+                self,
+                "队列运行中",
+                "批量准备队列正在运行。",
+            )
+            return
+        if self.current_draft_id:
+            self._capture_current_draft()
+        validated = validate_publish_drafts(list(self.drafts))
+        ready = [draft for draft in validated if not draft.validation_errors]
+        if not ready:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有可准备的发布包",
+                "请先导入并修正发布包，确保素材、标题和类型完整。",
+            )
+            return
+        skipped = len(validated) - len(ready)
+        if skipped:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "跳过需修正发布包",
+                f"有 {skipped} 个发布包未通过校验，将从本次队列跳过。\n\n"
+                "是否继续准备其余发布包？",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.Yes,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+
+        dialog = BatchPublishQueueDialog(ready, self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        if dialog.auto_publish_check.isChecked():
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "确认自动最终发布",
+                "该模式会逐条自动点击小红书最终发布，存在误发和账号风控风险。\n\n"
+                "是否继续？",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+
+        self.batch_prepare_thread = BatchPublishQueueThread(
+            dialog.entries,
+            browser_name=str(
+                self.platform_widgets["xiaohongshu"][
+                    "browser_combo"
+                ].currentData()
+                or "edge"
+            ),
+            auto_publish=dialog.auto_publish_check.isChecked(),
+            prep_lead_minutes=dialog.prep_lead_spin.value(),
+            parent=self,
+        )
+        self.batch_prepare_thread.progress.connect(
+            self._on_batch_prepare_progress
+        )
+        self.batch_prepare_thread.completed.connect(
+            self._on_batch_prepare_completed
+        )
+        self.batch_prepare_thread.failed.connect(
+            self._on_batch_prepare_failed
+        )
+        self.batch_prepare_thread.finished.connect(
+            lambda thread=self.batch_prepare_thread: self._clear_batch_prepare_thread(
+                thread
+            )
+        )
+        self.batch_prepare_button.setEnabled(False)
+        self.stop_batch_prepare_button.setEnabled(True)
+        self.status_label.setText(
+            f"批量准备队列已启动，共 {len(dialog.entries)} 个发布包。"
+        )
+        self.batch_prepare_thread.start()
+
+    def stop_batch_prepare_queue(self) -> None:
+        if (
+            self.batch_prepare_thread
+            and self.batch_prepare_thread.isRunning()
+        ):
+            self.batch_prepare_thread.stop()
+            self.stop_batch_prepare_button.setEnabled(False)
+            self.status_label.setText("已请求停止批量准备队列。")
+
+    def _clear_batch_prepare_thread(self, thread) -> None:
+        if self.batch_prepare_thread is thread:
+            self.batch_prepare_thread = None
+        self.batch_prepare_button.setEnabled(True)
+        self.stop_batch_prepare_button.setEnabled(False)
+        self._refresh_draft_table(select_id=self.current_draft_id)
+
+    def _on_batch_prepare_progress(
+        self,
+        index: int,
+        total: int,
+        message: str,
+    ) -> None:
+        self.status_label.setText(f"批量准备 {index}/{total}：{message}")
+
+    def _on_batch_prepare_completed(self, message: str) -> None:
+        self.status_label.setText(message)
+        self._refresh_draft_table(select_id=self.current_draft_id)
+        QtWidgets.QMessageBox.information(
+            self,
+            "批量准备完成",
+            message + "\n\n请在小红书页面逐条检查并手动点击最终发布。",
+        )
+
+    def _on_batch_prepare_failed(self, message: str) -> None:
+        self.status_label.setText(f"批量准备失败：{message}")
+        self._refresh_draft_table(select_id=self.current_draft_id)
+        QtWidgets.QMessageBox.critical(self, "批量准备失败", message)
 
     def _refresh_draft_combo(self, *, select_id: str = "") -> None:
         target = select_id or self.current_draft_id
@@ -3124,6 +3433,7 @@ class PublishPage(QtWidgets.QWidget):
         self.status_label.setText(
             f"已载入{draft.source_page}草稿：{draft.title or '未命名'}"
         )
+        self._refresh_draft_table(select_id=draft.draft_id)
 
     def _on_draft_changed(self, index: int) -> None:
         if index < 0:
@@ -3148,6 +3458,8 @@ class PublishPage(QtWidgets.QWidget):
             self.media_list.item(index).text()
             for index in range(self.media_list.count())
         ]
+        validate_publish_draft(draft)
+        self._refresh_draft_table(select_id=draft.draft_id)
 
     def _draft_by_id(self, draft_id: str) -> PublishDraft | None:
         return next(
@@ -3159,6 +3471,7 @@ class PublishPage(QtWidgets.QWidget):
         self.drafts = []
         self.current_draft_id = ""
         self.draft_combo.clear()
+        self.draft_table.setRowCount(0)
         self.media_list.clear()
         self.title_edit.clear()
         self.description_edit.clear()

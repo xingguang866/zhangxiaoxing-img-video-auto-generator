@@ -72,15 +72,15 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
 
         root = QtWidgets.QVBoxLayout(self)
         header = QtWidgets.QLabel(
-            "软件会按随机延迟逐条打开小红书，上传素材、填写标题正文标签、"
-            "设置自定义定时时间并提交发布。"
+            "软件会按设定间隔逐条打开小红书，上传素材、填写标题正文标签。"
+            "默认只准备到最终发布前，由你逐条确认。"
         )
         header.setWordWrap(True)
         root.addWidget(header)
 
         warning = QtWidgets.QLabel(
-            "注意：批量定时发布会自动点击最终发布，存在平台风控和误发风险。"
-            "请先确认标题、正文、素材和每个时间点。"
+            "安全默认：不自动点击最终发布。请勿高频连续运行，"
+            "先从小批量开始，并在出现验证码、登录异常或审核提示时立即停止。"
         )
         warning.setStyleSheet(
             "background:#FFF1F5;color:#B93D68;border-left:4px solid #E64F80;"
@@ -93,24 +93,34 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
         self.browser_combo = QtWidgets.QComboBox()
         self.browser_combo.addItem("Microsoft Edge（推荐）", "edge")
         self.browser_combo.addItem("Google Chrome", "chrome")
-        self.start_edit = QtWidgets.QDateTimeEdit(
-            QtCore.QDateTime.currentDateTime().addSecs(3600)
-        )
+        start_at = QtCore.QDateTime.currentDateTime().addSecs(3600)
+        for draft in drafts:
+            parsed = QtCore.QDateTime.fromString(
+                draft.scheduled_at,
+                "yyyy-MM-dd HH:mm",
+            )
+            if parsed.isValid() and parsed > QtCore.QDateTime.currentDateTime():
+                start_at = parsed
+                break
+        self.start_edit = QtWidgets.QDateTimeEdit(start_at)
         self.start_edit.setCalendarPopup(True)
         self.start_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
         self.min_delay_spin = QtWidgets.QSpinBox()
         self.min_delay_spin.setRange(1, 240)
-        self.min_delay_spin.setValue(5)
+        self.min_delay_spin.setValue(120)
         self.max_delay_spin = QtWidgets.QSpinBox()
         self.max_delay_spin.setRange(1, 360)
-        self.max_delay_spin.setValue(15)
+        self.max_delay_spin.setValue(240)
         self.prep_lead_spin = QtWidgets.QSpinBox()
         self.prep_lead_spin.setRange(1, 60)
-        self.prep_lead_spin.setValue(5)
+        self.prep_lead_spin.setValue(10)
+        self.max_jobs_spin = QtWidgets.QSpinBox()
+        self.max_jobs_spin.setRange(1, max(1, len(drafts)))
+        self.max_jobs_spin.setValue(min(2, max(1, len(drafts))))
         self.auto_publish_check = QtWidgets.QCheckBox(
-            "任务填写完成后自动点击最终发布"
+            "任务填写完成后自动点击最终发布（高风险）"
         )
-        self.auto_publish_check.setChecked(True)
+        self.auto_publish_check.setChecked(False)
         randomize_button = QtWidgets.QPushButton("重新随机生成时间")
         randomize_button.setObjectName("secondaryButton")
         randomize_button.clicked.connect(self.refresh_schedule)
@@ -129,6 +139,8 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
         settings.addWidget(self.prep_lead_spin, 1, 3)
         settings.addWidget(self.auto_publish_check, 2, 0, 1, 3)
         settings.addWidget(randomize_button, 2, 3)
+        settings.addWidget(QtWidgets.QLabel("本次最多准备（条）"), 3, 0)
+        settings.addWidget(self.max_jobs_spin, 3, 1)
         root.addLayout(settings)
 
         self.table = QtWidgets.QTableWidget(len(drafts), 6)
@@ -156,6 +168,12 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
             time_edit = QtWidgets.QDateTimeEdit()
             time_edit.setCalendarPopup(True)
             time_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+            parsed_schedule = QtCore.QDateTime.fromString(
+                draft.scheduled_at,
+                "yyyy-MM-dd HH:mm",
+            )
+            if parsed_schedule.isValid():
+                time_edit.setDateTime(parsed_schedule)
             time_edit.setMinimumDateTime(
                 QtCore.QDateTime.currentDateTime().addSecs(3600)
             )
@@ -171,16 +189,29 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
         buttons.addStretch(1)
         cancel_button = QtWidgets.QPushButton("取消")
         cancel_button.setObjectName("secondaryButton")
-        start_button = QtWidgets.QPushButton("启动批量发布队列")
+        start_button = QtWidgets.QPushButton("启动批量准备队列")
         start_button.setObjectName("primaryButton")
         cancel_button.clicked.connect(self.reject)
         start_button.clicked.connect(self.accept_queue)
         buttons.addWidget(cancel_button)
         buttons.addWidget(start_button)
         root.addLayout(buttons)
-        self.refresh_schedule()
+        self.refresh_schedule(use_draft_schedules=True)
 
-    def refresh_schedule(self) -> None:
+    def refresh_schedule(self, *, use_draft_schedules: bool = False) -> None:
+        if use_draft_schedules:
+            preserved = True
+            for index, draft in enumerate(self.drafts):
+                parsed = QtCore.QDateTime.fromString(
+                    draft.scheduled_at,
+                    "yyyy-MM-dd HH:mm",
+                )
+                if not parsed.isValid():
+                    preserved = False
+                    break
+                self.time_edits[index].setDateTime(parsed)
+            if preserved:
+                return
         start_at = self.start_edit.dateTime().toPython()
         try:
             generated = evenly_arranged_entries(
@@ -207,7 +238,8 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
             return
         minimum = datetime.now() + timedelta(hours=1)
         entries: list[PublishQueueEntry] = []
-        for draft, time_edit in zip(self.drafts, self.time_edits):
+        selected_drafts = self.drafts[: self.max_jobs_spin.value()]
+        for draft, time_edit in zip(selected_drafts, self.time_edits):
             scheduled_at = time_edit.dateTime().toPython()
             if scheduled_at < minimum:
                 QtWidgets.QMessageBox.warning(
@@ -222,6 +254,11 @@ class BatchPublishQueueDialog(QtWidgets.QDialog):
                     scheduled_at=scheduled_at,
                 )
             )
+            draft.scheduled_at = scheduled_at.strftime("%Y-%m-%d %H:%M")
+        for row in range(len(selected_drafts), len(self.drafts)):
+            status_item = self.table.item(row, 5)
+            if status_item is not None:
+                status_item.setText("未加入本次")
         self.entries = entries
         save_queue_state(entries)
         self.accept()

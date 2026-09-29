@@ -89,6 +89,7 @@ def run_publish_queue(
 ) -> None:
     notify = progress or (lambda _index, _total, _message: None)
     total = len(entries)
+    consecutive_failures = 0
     for index, entry in enumerate(entries, start=1):
         if stop_event.is_set():
             entry.status = "已停止"
@@ -135,11 +136,25 @@ def run_publish_queue(
                 if result.get("published") and result.get("scheduled")
                 else "已填写待人工发布"
             )
+            consecutive_failures = 0
         except Exception as exc:
             entry.status = "失败"
             entry.error = str(exc)
+            consecutive_failures += 1
             notify(index, total, f"失败：{entry.error}")
         save_queue_state(entries)
+
+        if consecutive_failures >= 2:
+            for pending in entries[index:]:
+                if pending.status == "等待中":
+                    pending.status = "已暂停"
+            save_queue_state(entries)
+            notify(
+                index,
+                total,
+                "连续 2 条任务失败，队列已自动暂停，请人工检查登录状态和页面提示。",
+            )
+            return
 
         if index < total and not stop_event.is_set():
             cooldown = random.randint(15, 45)
