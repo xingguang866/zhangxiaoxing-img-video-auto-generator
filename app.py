@@ -242,7 +242,11 @@ def build_batch_image_jobs(item: BatchItem) -> list[dict]:
         {
             "order": index,
             "is_cover": False,
-            "prompt": prompt,
+            "prompt": build_image_prompt(
+                item.theme,
+                prompt,
+                style,
+            ),
             "title": f"{item.theme}_图{index}",
         }
         for index, prompt in enumerate(item.image_prompts, start=1)

@@ -85,6 +85,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn("三个习惯现在就改", cover)
         self.assertIn("超大字号", cover)
         self.assertIn("45%至60%", cover)
+        self.assertIn("禁止出现英文单词", cover)
+        self.assertIn("禁止出现英文单词", prompt)
         self.assertEqual(count_chinese_characters("以下这5类人"), 5)
 
     def test_manual_image_bundle_includes_cover(self):
@@ -116,6 +118,9 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(jobs[0]["size"], "3:4")
         self.assertIn("干纸猛擦VS湿厕纸轻擦", jobs[0]["prompt"])
         self.assertIn("45%至60%", jobs[0]["prompt"])
+        self.assertIn("禁止出现英文单词", jobs[0]["prompt"])
+        self.assertIn("禁止出现英文单词", jobs[1]["prompt"])
+        self.assertIn("图1：对比场景", jobs[1]["prompt"])
         self.assertFalse(jobs[1]["is_cover"])
 
     def test_model_parameter_validation(self):
