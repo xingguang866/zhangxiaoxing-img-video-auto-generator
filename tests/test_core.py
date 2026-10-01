@@ -71,6 +71,7 @@ from hypit_rewrite import (
 from hypit_tutorial import ASSET_DIR, build_tutorial_html
 from hot_content import (
     HotContentItem,
+    OriginalContent,
     export_original_content_excel,
     mock_original_content,
 )
@@ -1249,6 +1250,38 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(cards[0].title, "久坐党护理清单")
             browser.close()
 
+    def test_hot_content_clear_button(self):
+        window = MainWindow()
+        page = window.hot_content_page
+        page.items = [
+            HotContentItem(
+                source_mode="链接采集",
+                title="待清空内容",
+            )
+        ]
+        page._refresh_table()
+        page.reference_edit.setPlainText("测试参考内容")
+        page.original = OriginalContent(
+            title="测试标题",
+            body="测试正文",
+            tags=["测试"],
+            cover_title="测试封面",
+            pages=[{"heading": "", "copy": "测试", "image_prompt": "测试"}],
+        )
+        page.original_title_edit.setText("测试标题")
+        page.original_body_edit.setPlainText("测试正文")
+        with patch(
+            "app.QtWidgets.QMessageBox.question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ):
+            page.clear_all_content()
+        self.assertEqual(page.items, [])
+        self.assertIsNone(page.original)
+        self.assertEqual(page.table.rowCount(), 0)
+        self.assertFalse(page.reference_edit.toPlainText())
+        self.assertFalse(page.original_title_edit.text())
+        window.close()
+
     def test_ui_smoke(self):
         window = MainWindow()
         window.show()
@@ -1263,8 +1296,22 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(
             window.hot_content_page.content_style_combo.currentText(),
-            "新闻体",
+            "小红书风格",
         )
+        self.assertEqual(
+            window.hot_content_page.content_style_combo.count(),
+            6,
+        )
+        self.assertTrue(
+            window.hot_content_page.content_style_combo.toolTip()
+        )
+        hot_buttons = {
+            button.text()
+            for button in window.hot_content_page.findChildren(
+                QtWidgets.QPushButton
+            )
+        }
+        self.assertIn("清空内容", hot_buttons)
         self.assertTrue(window.hot_content_page.reference_edit.placeholderText())
         self.assertIn("Hypit CLI", window.hypit_page.environment_label.toPlainText())
         self.assertEqual(window.hypit_page.tutorial_button.text(), "使用教程")

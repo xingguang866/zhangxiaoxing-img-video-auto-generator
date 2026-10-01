@@ -13,7 +13,36 @@ from api_client import APIConfig, APIMartClient
 from prompts import build_image_prompt, normalize_style_name
 
 
-CONTENT_STYLES = ["新闻体", "科普体", "口播体", "测评体"]
+CONTENT_STYLE_PROFILES: dict[str, dict[str, str]] = {
+    "小红书风格": {
+        "description": "真实亲身经历种草风，痛点故事开篇，实测清单卖点，情绪自然，适合小红书图文和口播。",
+        "example": (
+            "上个月去海边度假，偏偏撞上特殊时期，闷热黏腻很难受。"
+            "实测后发现，选对清洁用品能明显提升舒适感，重点突出真实体验和卖点清单。"
+        ),
+    },
+    "干货科普风": {
+        "description": "少情绪化感叹，讲底层逻辑和避坑知识，像闺蜜科普，建立专业感，不夸大功效。",
+        "example": "很多女生经期容易闷痒，其实清洁方式选错也会影响私处菌群，先看成分和干爽速度。",
+    },
+    "简短吐槽爽文风": {
+        "description": "开头强情绪，大量短句，吐槽痛点为主，卖点一句话带过，阅读压力低，适合短视频口播和图文。",
+        "example": "谁懂经期闷黏的痛苦。以前踩雷很多湿厕纸，擦完湿哒哒，越擦越闷。",
+    },
+    "极简高级质感风": {
+        "description": "弱化叫卖，侧重精致生活感受，文字克制温柔，少感叹号，适合氛围感图片和松弛感表达。",
+        "example": "海边度假遇上特殊时期，日常私护清洁，我更偏爱简单温和的选择。",
+    },
+    "避坑对比测评风": {
+        "description": "先讲踩雷点，再横向对比产品，突出关键差异，适合测评号，表达客观真实。",
+        "example": "自费实测多款湿厕纸。踩雷款水分大、容易破；更好的选择更厚实、更快干、配方更温和。",
+    },
+    "闺蜜碎碎念日记风": {
+        "description": "第一人称碎碎念，生活化，小情绪自然穿插，卖点融入日常叙述，广告感最低。",
+        "example": "上次去海边度假又赶上经期，一直很在意清洁，不敢乱用东西，最近用的这款让我安心不少。",
+    },
+}
+CONTENT_STYLES = list(CONTENT_STYLE_PROFILES)
 
 
 def _new_item_id() -> str:
@@ -169,6 +198,9 @@ def build_rewrite_prompt(
     style: str,
     target_word_count: int,
 ) -> str:
+    style_profile = CONTENT_STYLE_PROFILES.get(style, {})
+    style_description = style_profile.get("description", style)
+    style_example = style_profile.get("example", "")
     return f"""
 请根据“参考爆款结构”和“用户提供的参考内容”，生成全新的原创图文内容。
 
@@ -177,9 +209,12 @@ def build_rewrite_prompt(
 2. 只参考爆款的选题、结构和表达节奏，不得复制原句。
 3. 不编造产品功效，不写治愈、根治、保证有效等承诺。
 4. 内容风格：{style}。
-5. 正文目标字数：约 {target_word_count} 个中文字符。
-6. 输出 4 到 6 个图文页面。
-7. 所有图片中的可见文字必须使用简体中文。
+5. 风格特点：{style_description}
+6. 风格参考样例（只模仿语气和结构，不得照抄）：
+{style_example or "无"}
+7. 正文目标字数：约 {target_word_count} 个中文字符。
+8. 输出 4 到 6 个图文页面。
+9. 所有图片中的可见文字必须使用简体中文。
 
 爆款参考：
 标题：{item.title}

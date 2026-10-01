@@ -51,6 +51,7 @@ from hypit_simple_ui import HypitSimplePage
 from hypit_tutorial import build_tutorial_html
 from hot_content import (
     CONTENT_STYLES,
+    CONTENT_STYLE_PROFILES,
     HotContentItem,
     OriginalContent,
     export_original_content_excel,
@@ -4260,7 +4261,18 @@ class HotContentPage(QtWidgets.QWidget):
 
         rewrite_form = QtWidgets.QFormLayout()
         self.content_style_combo = QtWidgets.QComboBox()
-        self.content_style_combo.addItems(CONTENT_STYLES)
+        for style in CONTENT_STYLES:
+            self.content_style_combo.addItem(style)
+            index = self.content_style_combo.count() - 1
+            self.content_style_combo.setItemData(
+                index,
+                CONTENT_STYLE_PROFILES[style]["description"],
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        self.content_style_combo.setCurrentText("小红书风格")
+        self.content_style_combo.currentIndexChanged.connect(
+            self._update_style_tooltip
+        )
         self.word_count_spin = QtWidgets.QSpinBox()
         self.word_count_spin.setRange(100, 1500)
         self.word_count_spin.setSingleStep(50)
@@ -4282,6 +4294,8 @@ class HotContentPage(QtWidgets.QWidget):
         self.rewrite_button.setMinimumHeight(46)
         self.rewrite_button.clicked.connect(self.start_rewrite)
         side_layout.addWidget(self.rewrite_button)
+        self.style_tooltip_label = hint_label("")
+        side_layout.addWidget(self.style_tooltip_label)
         self.rewrite_status = hint_label("请先采集并选择一条爆款内容。")
         side_layout.addWidget(self.rewrite_status)
         side_layout.addStretch(1)
@@ -4340,6 +4354,10 @@ class HotContentPage(QtWidgets.QWidget):
         main.addWidget(self.result_tabs, 2)
 
         actions = QtWidgets.QHBoxLayout()
+        clear_button = QtWidgets.QPushButton("清空内容")
+        clear_button.setObjectName("secondaryButton")
+        clear_button.clicked.connect(self.clear_all_content)
+        actions.addWidget(clear_button)
         actions.addStretch(1)
         export_button = QtWidgets.QPushButton("导出 Excel")
         export_button.setObjectName("secondaryButton")
@@ -4353,6 +4371,7 @@ class HotContentPage(QtWidgets.QWidget):
 
         root.addWidget(scrollable_side_card(side, 450))
         root.addLayout(main, 1)
+        self._update_style_tooltip()
 
     def set_models(self, catalog: dict[str, list[dict]]) -> None:
         current = self.text_model_combo.currentText().strip()
@@ -4373,6 +4392,47 @@ class HotContentPage(QtWidgets.QWidget):
         self.link_edit.setVisible(not keyword_mode)
         self.keyword_edit.setVisible(keyword_mode)
         self.result_limit_spin.setEnabled(keyword_mode)
+
+    def _update_style_tooltip(self) -> None:
+        style = self.content_style_combo.currentText()
+        description = CONTENT_STYLE_PROFILES.get(style, {}).get(
+            "description",
+            "",
+        )
+        self.content_style_combo.setToolTip(description)
+        self.style_tooltip_label.setText(description)
+
+    def clear_all_content(self) -> None:
+        if self.items or self.original is not None:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "清空内容",
+                "将清空采集结果、参考内容、原创文案和生图提示词。是否继续？",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        self.items = []
+        self.original = None
+        self.table.setRowCount(0)
+        self.link_edit.clear()
+        self.keyword_edit.clear()
+        self.reference_edit.clear()
+        self.product_edit.clear()
+        self.audience_edit.clear()
+        self.analysis_edit.clear()
+        self.original_title_edit.clear()
+        self.original_cover_edit.clear()
+        self.original_tags_edit.clear()
+        self.original_body_edit.clear()
+        self.page_script_edit.clear()
+        self.image_prompt_edit.clear()
+        self.video_prompt_edit.clear()
+        self.collect_status.setText("等待采集")
+        self.rewrite_status.setText("请先采集并选择一条爆款内容。")
+        self.result_tabs.setCurrentIndex(0)
 
     def _set_collect_running(self, running: bool) -> None:
         self.collect_button.setEnabled(not running)
