@@ -69,6 +69,11 @@ from hypit_rewrite import (
     run_originality_workflow,
 )
 from hypit_tutorial import ASSET_DIR, build_tutorial_html
+from hot_content import (
+    HotContentItem,
+    export_original_content_excel,
+    mock_original_content,
+)
 from image_reference import (
     build_reference_instruction,
     max_reference_images_for_model,
@@ -91,6 +96,11 @@ from publish_batch import (
 )
 from publish_queue import PublishQueueEntry, evenly_arranged_entries, run_publish_queue
 from prompts import STYLE_PROMPTS, build_cover_prompt, build_image_prompt
+from xhs_collector import (
+    _extract_detail,
+    _extract_visible_cards,
+    normalize_xhs_url,
+)
 
 
 class CoreTests(unittest.TestCase):
@@ -1168,14 +1178,86 @@ class CoreTests(unittest.TestCase):
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
 
+    def test_hot_content_rewrite_and_excel_export(self):
+        item = HotContentItem(
+            source_mode="链接采集",
+            source_url="https://www.xiaohongshu.com/explore/test",
+            title="久坐党护理",
+            body="减少反复摩擦，保持清爽",
+            author="测试作者",
+            tags=["肛周护理", "久坐党"],
+        )
+        original = mock_original_content(
+            item,
+            reference_content=(
+                "1、如厕后减少反复摩擦\n"
+                "2、使用湿厕纸保持清爽\n"
+                "3、久坐一小时起身活动"
+            ),
+            product_info="马应龙彩虹湿厕纸",
+            audience="久坐上班族",
+            style="科普体",
+            target_word_count=260,
+        )
+        self.assertTrue(original.title)
+        self.assertGreaterEqual(len(original.pages), 4)
+        self.assertIn("马应龙彩虹湿厕纸", original.body)
+        prompts = original.image_prompts(
+            theme=original.title,
+            style="手绘卡通",
+        )
+        self.assertEqual(len(prompts), len(original.pages))
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = export_original_content_excel(
+                Path(temp) / "原创内容.xlsx",
+                item=item,
+                original=original,
+            )
+            self.assertTrue(output.exists())
+            self.assertGreater(output.stat().st_size, 5_000)
+
+    def test_xhs_visible_collector_helpers(self):
+        self.assertEqual(
+            normalize_xhs_url(
+                "复制链接 https://www.xiaohongshu.com/explore/abc 打开小红书"
+            ),
+            "https://www.xiaohongshu.com/explore/abc",
+        )
+        fixture = self.root / "tests" / "fixtures" / "xhs_collect.html"
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                channel="msedge",
+                headless=True,
+            )
+            page = browser.new_page()
+            page.goto(fixture.as_uri(), wait_until="domcontentloaded")
+            detail = _extract_detail(page)
+            cards = _extract_visible_cards(page, limit=5)
+            self.assertEqual(detail.title, "久坐党日常护理的三个习惯")
+            self.assertIn("反复摩擦", detail.body)
+            self.assertIn("肛周护理", detail.tags)
+            self.assertGreaterEqual(len(cards), 1)
+            self.assertEqual(cards[0].title, "久坐党护理清单")
+            browser.close()
+
     def test_ui_smoke(self):
         window = MainWindow()
         window.show()
         self.app.processEvents()
-        self.assertEqual(window.stack.count(), 8)
+        self.assertEqual(window.stack.count(), 9)
         self.assertEqual(window.stack.currentIndex(), 0)
         self.assertEqual(window.models_page.tabs.count(), 4)
         self.assertEqual(window.publish_page.tabs.count(), 5)
+        self.assertEqual(
+            window.hot_content_page.collection_mode_combo.count(),
+            2,
+        )
+        self.assertEqual(
+            window.hot_content_page.content_style_combo.currentText(),
+            "新闻体",
+        )
+        self.assertTrue(window.hot_content_page.reference_edit.placeholderText())
         self.assertIn("Hypit CLI", window.hypit_page.environment_label.toPlainText())
         self.assertEqual(window.hypit_page.tutorial_button.text(), "使用教程")
         self.assertEqual(window.hypit_page.mode_tabs.count(), 2)

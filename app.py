@@ -49,6 +49,13 @@ from hypit_service import (
 )
 from hypit_simple_ui import HypitSimplePage
 from hypit_tutorial import build_tutorial_html
+from hot_content import (
+    CONTENT_STYLES,
+    HotContentItem,
+    OriginalContent,
+    export_original_content_excel,
+    generate_original_content,
+)
 from image_reference import (
     build_reference_instruction,
     max_reference_images_for_model,
@@ -85,6 +92,7 @@ from publish_batch import (
     validate_publish_draft,
     validate_publish_drafts,
 )
+from xhs_collector import collect_xhs_link, search_xhs_visible
 
 
 APP_TITLE = "张小星图文视频生成器"
@@ -4111,6 +4119,540 @@ class PublishPage(QtWidgets.QWidget):
         QtWidgets.QMessageBox.critical(self, "辅助上传失败", message)
 
 
+class HotCollectThread(QtCore.QThread):
+    result = QtCore.Signal(object, str)
+    error = QtCore.Signal(str)
+
+    def __init__(
+        self,
+        mode: str,
+        value: str,
+        *,
+        limit: int,
+        browser_name: str,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.mode = mode
+        self.value = value
+        self.limit = limit
+        self.browser_name = browser_name
+
+    def run(self) -> None:
+        try:
+            if self.mode == "link":
+                self.result.emit(
+                    [collect_xhs_link(self.value, browser_name=self.browser_name)],
+                    "链接内容采集完成。",
+                )
+            else:
+                self.result.emit(
+                    search_xhs_visible(
+                        self.value,
+                        limit=self.limit,
+                        browser_name=self.browser_name,
+                    ),
+                    "关键词可见结果采集完成。",
+                )
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class HotRewriteThread(QtCore.QThread):
+    result = QtCore.Signal(object)
+    error = QtCore.Signal(str)
+
+    def __init__(self, params: dict, parent=None):
+        super().__init__(parent)
+        self.params = params
+
+    def run(self) -> None:
+        try:
+            self.result.emit(generate_original_content(**self.params))
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class HotContentPage(QtWidgets.QWidget):
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.items: list[HotContentItem] = []
+        self.collect_thread: HotCollectThread | None = None
+        self.rewrite_thread: HotRewriteThread | None = None
+        self.original: OriginalContent | None = None
+
+        root = QtWidgets.QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+
+        side = card_frame()
+        side.setMinimumWidth(420)
+        side_layout = QtWidgets.QVBoxLayout(side)
+        side_layout.setContentsMargins(18, 18, 18, 18)
+        side_layout.setSpacing(12)
+        side_layout.addWidget(section_label("小红书爆款采集"))
+        side_layout.addWidget(
+            hint_label(
+                "链接采集和关键词采集均使用浏览器辅助，只读取当前可见内容，"
+                "不调用小红书私有接口。"
+            )
+        )
+
+        self.collection_mode_combo = QtWidgets.QComboBox()
+        self.collection_mode_combo.addItem("手动粘贴链接", "link")
+        self.collection_mode_combo.addItem("关键词搜索", "keyword")
+        self.collection_mode_combo.currentIndexChanged.connect(
+            self._update_collection_fields
+        )
+        side_layout.addWidget(self.collection_mode_combo)
+
+        self.link_edit = QtWidgets.QLineEdit()
+        self.link_edit.setPlaceholderText("粘贴小红书分享链接")
+        self.keyword_edit = QtWidgets.QLineEdit()
+        self.keyword_edit.setPlaceholderText("输入搜索关键词")
+        self.keyword_edit.setVisible(False)
+        side_layout.addWidget(self.link_edit)
+        side_layout.addWidget(self.keyword_edit)
+
+        limit_row = QtWidgets.QHBoxLayout()
+        self.result_limit_spin = QtWidgets.QSpinBox()
+        self.result_limit_spin.setRange(1, 30)
+        self.result_limit_spin.setValue(10)
+        self.result_limit_spin.setEnabled(False)
+        self.browser_combo = QtWidgets.QComboBox()
+        self.browser_combo.addItem("Microsoft Edge", "edge")
+        self.browser_combo.addItem("Google Chrome", "chrome")
+        limit_row.addWidget(QtWidgets.QLabel("最多读取"))
+        limit_row.addWidget(self.result_limit_spin)
+        limit_row.addWidget(QtWidgets.QLabel("条"))
+        limit_row.addStretch(1)
+        limit_row.addWidget(self.browser_combo)
+        side_layout.addLayout(limit_row)
+
+        self.collect_button = QtWidgets.QPushButton("浏览器辅助采集")
+        self.collect_button.setObjectName("primaryButton")
+        self.collect_button.clicked.connect(self.start_collection)
+        side_layout.addWidget(self.collect_button)
+        self.collect_status = hint_label("等待采集")
+        side_layout.addWidget(self.collect_status)
+
+        side_layout.addWidget(section_label("创作参考包"))
+        side_layout.addWidget(
+            hint_label("原创内容必须围绕这里的事实、产品或服务信息展开。")
+        )
+        self.reference_edit = QtWidgets.QPlainTextEdit()
+        self.reference_edit.setPlaceholderText(
+            "填写必须参考和表达的内容，例如：\n"
+            "1、如厕后减少反复摩擦\n"
+            "2、湿厕纸要保持清爽\n"
+            "3、产品适合日常护理"
+        )
+        self.reference_edit.setFixedHeight(150)
+        side_layout.addWidget(self.reference_edit)
+
+        self.product_edit = QtWidgets.QLineEdit()
+        self.product_edit.setPlaceholderText("产品或服务，例如：马应龙彩虹湿厕纸")
+        self.audience_edit = QtWidgets.QLineEdit()
+        self.audience_edit.setPlaceholderText("目标人群，例如：久坐上班族")
+        side_layout.addWidget(self.product_edit)
+        side_layout.addWidget(self.audience_edit)
+
+        rewrite_form = QtWidgets.QFormLayout()
+        self.content_style_combo = QtWidgets.QComboBox()
+        self.content_style_combo.addItems(CONTENT_STYLES)
+        self.word_count_spin = QtWidgets.QSpinBox()
+        self.word_count_spin.setRange(100, 1500)
+        self.word_count_spin.setSingleStep(50)
+        self.word_count_spin.setValue(300)
+        self.image_style_combo = QtWidgets.QComboBox()
+        self.image_style_combo.addItems(list(STYLE_PROMPTS.keys()))
+        self.image_style_combo.setCurrentText("手绘卡通")
+        self.text_model_combo = QtWidgets.QComboBox()
+        self.text_model_combo.setEditable(True)
+        self.text_model_combo.addItem("gpt-4o-mini")
+        rewrite_form.addRow("内容风格", self.content_style_combo)
+        rewrite_form.addRow("目标字数", self.word_count_spin)
+        rewrite_form.addRow("生图风格", self.image_style_combo)
+        rewrite_form.addRow("文本模型", self.text_model_combo)
+        side_layout.addLayout(rewrite_form)
+
+        self.rewrite_button = QtWidgets.QPushButton("生成原创内容")
+        self.rewrite_button.setObjectName("primaryButton")
+        self.rewrite_button.setMinimumHeight(46)
+        self.rewrite_button.clicked.connect(self.start_rewrite)
+        side_layout.addWidget(self.rewrite_button)
+        self.rewrite_status = hint_label("请先采集并选择一条爆款内容。")
+        side_layout.addWidget(self.rewrite_status)
+        side_layout.addStretch(1)
+
+        main = QtWidgets.QVBoxLayout()
+        main.setSpacing(12)
+        table_card = card_frame()
+        table_layout = QtWidgets.QVBoxLayout(table_card)
+        table_layout.setContentsMargins(14, 14, 14, 14)
+        table_layout.addWidget(section_label("采集结果"))
+        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["序号", "类型", "标题", "作者", "可见数据"]
+        )
+        self.table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            2,
+            QtWidgets.QHeaderView.ResizeMode.Stretch,
+        )
+        self.table.itemSelectionChanged.connect(self._on_item_selected)
+        self.table.setMinimumHeight(190)
+        table_layout.addWidget(self.table)
+        main.addWidget(table_card, 1)
+
+        self.result_tabs = QtWidgets.QTabWidget()
+        self.analysis_edit = QtWidgets.QPlainTextEdit()
+        self.analysis_edit.setReadOnly(True)
+        self.result_tabs.addTab(self.analysis_edit, "采集内容")
+
+        original_page = QtWidgets.QWidget()
+        original_layout = QtWidgets.QFormLayout(original_page)
+        self.original_title_edit = QtWidgets.QLineEdit()
+        self.original_cover_edit = QtWidgets.QLineEdit()
+        self.original_tags_edit = QtWidgets.QLineEdit()
+        self.original_body_edit = QtWidgets.QPlainTextEdit()
+        original_layout.addRow("标题", self.original_title_edit)
+        original_layout.addRow("封面标题", self.original_cover_edit)
+        original_layout.addRow("标签", self.original_tags_edit)
+        original_layout.addRow("正文", self.original_body_edit)
+        self.result_tabs.addTab(original_page, "原创文案")
+
+        self.page_script_edit = QtWidgets.QPlainTextEdit()
+        self.result_tabs.addTab(self.page_script_edit, "分页脚本")
+        self.image_prompt_edit = QtWidgets.QPlainTextEdit()
+        self.result_tabs.addTab(self.image_prompt_edit, "生图提示词")
+        self.video_prompt_edit = QtWidgets.QPlainTextEdit()
+        self.result_tabs.addTab(self.video_prompt_edit, "视频提示词")
+        main.addWidget(self.result_tabs, 2)
+
+        actions = QtWidgets.QHBoxLayout()
+        actions.addStretch(1)
+        export_button = QtWidgets.QPushButton("导出 Excel")
+        export_button.setObjectName("secondaryButton")
+        export_button.clicked.connect(self.export_excel)
+        send_image_button = QtWidgets.QPushButton("发送到图文生成")
+        send_image_button.setObjectName("primaryButton")
+        send_image_button.clicked.connect(self.send_to_image_generation)
+        actions.addWidget(export_button)
+        actions.addWidget(send_image_button)
+        main.addLayout(actions)
+
+        root.addWidget(scrollable_side_card(side, 450))
+        root.addLayout(main, 1)
+
+    def set_models(self, catalog: dict[str, list[dict]]) -> None:
+        current = self.text_model_combo.currentText().strip()
+        models = model_ids(catalog, "chat")
+        if not models:
+            return
+        target = current if current in models else "gpt-4o-mini"
+        if target not in models:
+            target = models[0]
+        self.text_model_combo.blockSignals(True)
+        self.text_model_combo.clear()
+        self.text_model_combo.addItems(models)
+        self.text_model_combo.setCurrentText(target)
+        self.text_model_combo.blockSignals(False)
+
+    def _update_collection_fields(self) -> None:
+        keyword_mode = self.collection_mode_combo.currentData() == "keyword"
+        self.link_edit.setVisible(not keyword_mode)
+        self.keyword_edit.setVisible(keyword_mode)
+        self.result_limit_spin.setEnabled(keyword_mode)
+
+    def _set_collect_running(self, running: bool) -> None:
+        self.collect_button.setEnabled(not running)
+        self.collect_button.setText(
+            "正在打开浏览器采集..."
+            if running
+            else "浏览器辅助采集"
+        )
+
+    def start_collection(self) -> None:
+        if thread_is_running(self.collect_thread):
+            QtWidgets.QMessageBox.information(self, "正在采集", "请等待当前采集完成。")
+            return
+        mode = str(self.collection_mode_combo.currentData() or "link")
+        value = (
+            self.link_edit.text().strip()
+            if mode == "link"
+            else self.keyword_edit.text().strip()
+        )
+        if not value:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "缺少内容",
+                "请粘贴小红书链接，或填写搜索关键词。",
+            )
+            return
+        self._set_collect_running(True)
+        self.collect_status.setText("正在打开小红书官方页面...")
+        self.collect_thread = HotCollectThread(
+            mode,
+            value,
+            limit=self.result_limit_spin.value(),
+            browser_name=str(self.browser_combo.currentData() or "edge"),
+            parent=self,
+        )
+        self.collect_thread.result.connect(self._on_collection_result)
+        self.collect_thread.error.connect(self._on_collection_error)
+        self.collect_thread.finished.connect(
+            lambda thread=self.collect_thread: self._clear_collect_thread(thread)
+        )
+        self.collect_thread.start()
+
+    def _clear_collect_thread(self, thread) -> None:
+        if self.collect_thread is thread:
+            self.collect_thread = None
+        self._set_collect_running(False)
+
+    def _on_collection_result(self, items: list[HotContentItem], message: str) -> None:
+        existing_urls = {item.source_url for item in self.items if item.source_url}
+        added: list[HotContentItem] = []
+        for item in items:
+            if item.source_url and item.source_url in existing_urls:
+                continue
+            self.items.append(item)
+            added.append(item)
+            if item.source_url:
+                existing_urls.add(item.source_url)
+        self._refresh_table()
+        if added:
+            self.table.selectRow(len(self.items) - 1)
+        self.collect_status.setText(
+            f"{message} 新增 {len(added)} 条，共 {len(self.items)} 条。"
+        )
+
+    def _on_collection_error(self, message: str) -> None:
+        self.collect_status.setText(f"采集失败：{message}")
+        QtWidgets.QMessageBox.critical(self, "采集失败", message)
+
+    def _refresh_table(self) -> None:
+        self.table.setRowCount(len(self.items))
+        for row, item in enumerate(self.items):
+            values = [
+                str(row + 1),
+                item.content_type,
+                item.title,
+                item.author,
+                item.metrics,
+            ]
+            for column, value in enumerate(values):
+                cell = QtWidgets.QTableWidgetItem(value)
+                if column in {0, 1}:
+                    cell.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, column, cell)
+
+    def selected_item(self) -> HotContentItem | None:
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        row = rows[0].row()
+        return self.items[row] if 0 <= row < len(self.items) else None
+
+    def _on_item_selected(self) -> None:
+        item = self.selected_item()
+        if item is None:
+            return
+        self.analysis_edit.setPlainText(item.analysis_text())
+        self.rewrite_status.setText(f"已选择：{item.title or '未命名内容'}")
+
+    def start_rewrite(self) -> None:
+        if thread_is_running(self.rewrite_thread):
+            QtWidgets.QMessageBox.information(self, "正在生成", "请等待当前生成完成。")
+            return
+        item = self.selected_item()
+        if item is None:
+            QtWidgets.QMessageBox.warning(self, "没有选择内容", "请先选择一条采集结果。")
+            return
+        reference_content = self.reference_edit.toPlainText().strip()
+        if not reference_content:
+            QtWidgets.QMessageBox.warning(self, "缺少参考内容", "请先填写创作参考包。")
+            return
+        settings = self.main_window.settings_store.as_dict()
+        params = {
+            "item": item,
+            "reference_content": reference_content,
+            "product_info": self.product_edit.text().strip(),
+            "audience": self.audience_edit.text().strip(),
+            "style": self.content_style_combo.currentText(),
+            "target_word_count": self.word_count_spin.value(),
+            "text_model": self.text_model_combo.currentText().strip(),
+            "settings": settings,
+        }
+        self.rewrite_button.setEnabled(False)
+        self.rewrite_button.setText("正在生成原创内容...")
+        self.rewrite_status.setText("正在围绕参考内容进行原创重构...")
+        self.rewrite_thread = HotRewriteThread(params, self)
+        self.rewrite_thread.result.connect(self._on_rewrite_result)
+        self.rewrite_thread.error.connect(self._on_rewrite_error)
+        self.rewrite_thread.finished.connect(
+            lambda thread=self.rewrite_thread: self._clear_rewrite_thread(thread)
+        )
+        self.rewrite_thread.start()
+
+    def _clear_rewrite_thread(self, thread) -> None:
+        if self.rewrite_thread is thread:
+            self.rewrite_thread = None
+        self.rewrite_button.setEnabled(True)
+        self.rewrite_button.setText("生成原创内容")
+
+    def _on_rewrite_result(self, original: OriginalContent) -> None:
+        self.original = original
+        self.original_title_edit.setText(original.title)
+        self.original_cover_edit.setText(original.cover_title)
+        self.original_tags_edit.setText(" ".join(original.tags))
+        self.original_body_edit.setPlainText(original.body)
+        self.page_script_edit.setPlainText("\n".join(original.page_lines()))
+        prompts = original.image_prompts(
+            theme=original.title,
+            style=self.image_style_combo.currentText(),
+        )
+        self.image_prompt_edit.setPlainText("\n\n".join(prompts))
+        self.video_prompt_edit.setPlainText(original.video_prompt)
+        self.result_tabs.setCurrentIndex(1)
+        self.rewrite_status.setText("原创内容已生成，可修改后导出或发送到图文生成。")
+
+    def _on_rewrite_error(self, message: str) -> None:
+        self.rewrite_status.setText(f"生成失败：{message}")
+        QtWidgets.QMessageBox.critical(self, "原创生成失败", message)
+
+    def _current_original(self) -> OriginalContent:
+        if self.original is None:
+            raise ValueError("请先生成原创内容。")
+        self.original.title = self.original_title_edit.text().strip()
+        self.original.cover_title = self.original_cover_edit.text().strip()
+        self.original.tags = [
+            tag.strip().lstrip("#")
+            for tag in re.split(
+                r"[\s,，、;；#]+",
+                self.original_tags_edit.text(),
+            )
+            if tag.strip().lstrip("#")
+        ]
+        self.original.body = self.original_body_edit.toPlainText().strip()
+        self.original.video_prompt = self.video_prompt_edit.toPlainText().strip()
+        page_lines = [
+            line.strip()
+            for line in self.page_script_edit.toPlainText().splitlines()
+            if line.strip()
+        ]
+        prompt_text = self.image_prompt_edit.toPlainText().strip()
+        prompt_values = [
+            value.strip()
+            for value in re.split(r"\n\s*\n", prompt_text)
+            if value.strip()
+        ]
+        if page_lines or prompt_values:
+            pages: list[dict] = []
+            total = max(len(page_lines), len(prompt_values))
+            for index in range(total):
+                heading = ""
+                copy = ""
+                if index < len(page_lines):
+                    value = re.sub(
+                        r"^\s*\d+\s*[、.．]\s*",
+                        "",
+                        page_lines[index],
+                    ).strip()
+                    if "：" in value:
+                        heading, copy = value.split("：", 1)
+                    else:
+                        copy = value
+                original_page = (
+                    self.original.pages[index]
+                    if index < len(self.original.pages)
+                    else {}
+                )
+                pages.append(
+                    {
+                        "heading": heading or str(
+                            original_page.get("heading", "")
+                        ),
+                        "copy": copy or str(original_page.get("copy", "")),
+                        "image_prompt": (
+                            prompt_values[index]
+                            if index < len(prompt_values)
+                            else str(original_page.get("image_prompt", ""))
+                        ),
+                    }
+                )
+            self.original.pages = pages
+        return self.original
+
+    def export_excel(self) -> None:
+        try:
+            original = self._current_original()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "没有原创内容", str(exc))
+            return
+        default_name = str(
+            Path.home() / f"爆款原创_{safe_filename(original.title or '未命名')}.xlsx"
+        )
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "导出原创图文 Excel",
+            default_name,
+            "Excel 文件 (*.xlsx)",
+        )
+        if not path:
+            return
+        item = self.selected_item() or HotContentItem(source_mode="原创重构")
+        try:
+            output = export_original_content_excel(
+                path,
+                item=item,
+                original=original,
+                image_style=self.image_style_combo.currentText(),
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        self.rewrite_status.setText(f"已导出：{output}")
+
+    def send_to_image_generation(self) -> None:
+        try:
+            original = self._current_original()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "没有原创内容", str(exc))
+            return
+        page_lines = [
+            line.strip()
+            for line in self.page_script_edit.toPlainText().splitlines()
+            if line.strip()
+        ]
+        if not page_lines:
+            page_lines = [
+                line.strip()
+                for line in original.body.splitlines()
+                if line.strip()
+            ]
+        self.main_window.image_page.theme_edit.setText(original.title)
+        self.main_window.image_page.copy_edit.setPlainText("\n".join(page_lines))
+        self.main_window.image_page.cover_title_edit.setText(
+            original.cover_title or original.title
+        )
+        self.main_window.image_page.style_combo.setCurrentText(
+            self.image_style_combo.currentText()
+        )
+        self.main_window.stack.setCurrentIndex(0)
+        self.main_window.nav_buttons[0].setChecked(True)
+
+
 class ModelsPage(QtWidgets.QWidget):
     refresh_requested = QtCore.Signal()
     pricing_refresh_requested = QtCore.Signal()
@@ -4526,6 +5068,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "剪映草稿",
             "Hypit视频",
             "发布中心",
+            "爆款重构",
             "模型中心",
             "配置",
         ]
@@ -4552,6 +5095,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.jianying_page = JianyingPage(self)
         self.hypit_page = HypitPage(self)
         self.publish_page = PublishPage(self)
+        self.hot_content_page = HotContentPage(self)
         self.models_page = ModelsPage(self)
         self.settings_page = SettingsPage(self)
         self.models_page.refresh_requested.connect(self.refresh_models)
@@ -4564,6 +5108,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.jianying_page,
             self.hypit_page,
             self.publish_page,
+            self.hot_content_page,
             self.models_page,
             self.settings_page,
         ):
@@ -4594,6 +5139,7 @@ class MainWindow(QtWidgets.QMainWindow):
             model_ids(catalog, "video"),
         )
         self.hypit_page.simple_page.set_models(catalog)
+        self.hot_content_page.set_models(catalog)
 
     def refresh_models(self, silent: bool = False) -> None:
         if thread_is_running(self._model_fetch_thread):
