@@ -99,6 +99,7 @@ from prompts import STYLE_PROMPTS, build_cover_prompt, build_image_prompt
 from xhs_collector import (
     _extract_detail,
     _extract_visible_cards,
+    _login_required,
     normalize_xhs_url,
 )
 
@@ -1231,6 +1232,13 @@ class CoreTests(unittest.TestCase):
                 headless=True,
             )
             page = browser.new_page()
+            page.goto(fixture.as_uri(), wait_until="domcontentloaded")
+            self.assertFalse(_login_required(page))
+            page.set_content(
+                "<body><div>登录后查看搜索结果</div>"
+                "<button>手机号登录</button></body>"
+            )
+            self.assertTrue(_login_required(page))
             page.goto(fixture.as_uri(), wait_until="domcontentloaded")
             detail = _extract_detail(page)
             cards = _extract_visible_cards(page, limit=5)

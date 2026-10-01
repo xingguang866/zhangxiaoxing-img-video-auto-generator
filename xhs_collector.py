@@ -40,7 +40,13 @@ def _persistent_context(playwright, browser_name: str):
 
 def _login_required(page: Page) -> bool:
     text = page.locator("body").inner_text(timeout=5000)
-    markers = ("扫码登录", "手机号登录", "登录后查看", "请先登录")
+    markers = (
+        "登录后查看搜索结果",
+        "扫码登录",
+        "手机号登录",
+        "登录后查看",
+        "请先登录",
+    )
     return any(marker in text for marker in markers) and "发布" not in text[:500]
 
 
