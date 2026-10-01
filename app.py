@@ -1002,6 +1002,11 @@ class ImagePage(BaseGenerationPage):
         side_layout.addWidget(section_label("图文描述"))
         side_layout.addWidget(hint_label("输入主题和每张图文案。每行代表一张图片。"))
 
+        self.generation_mode_combo = QtWidgets.QComboBox()
+        self.generation_mode_combo.addItem("自动生成提示词", "auto")
+        self.generation_mode_combo.addItem("使用导入提示词", "imported")
+        side_layout.addWidget(self.generation_mode_combo)
+
         self.theme_edit = QtWidgets.QLineEdit()
         self.theme_edit.setPlaceholderText("主题，例如：久坐党如厕后的温和清洁")
         side_layout.addWidget(self.theme_edit)
@@ -1016,6 +1021,9 @@ class ImagePage(BaseGenerationPage):
         )
         self.copy_edit.setFixedHeight(180)
         side_layout.addWidget(self.copy_edit)
+        self.generation_mode_combo.currentIndexChanged.connect(
+            self._on_generation_mode_changed
+        )
 
         side_layout.addWidget(section_label("封面图生成"))
         cover_form = QtWidgets.QFormLayout()
@@ -1189,8 +1197,37 @@ class ImagePage(BaseGenerationPage):
         side_layout.addStretch(1)
 
         self.gallery = MediaGallery("图片预览")
+        self.page_task_table = QtWidgets.QTableWidget(0, 5)
+        self.page_task_table.setHorizontalHeaderLabels(
+            ["页码", "页面标题", "页面文案", "图片中文字", "生图提示词"]
+        )
+        self.page_task_table.horizontalHeader().setSectionResizeMode(
+            0,
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
+        )
+        self.page_task_table.horizontalHeader().setSectionResizeMode(
+            1,
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents,
+        )
+        self.page_task_table.horizontalHeader().setSectionResizeMode(
+            2,
+            QtWidgets.QHeaderView.ResizeMode.Stretch,
+        )
+        self.page_task_table.horizontalHeader().setSectionResizeMode(
+            3,
+            QtWidgets.QHeaderView.ResizeMode.Stretch,
+        )
+        self.page_task_table.horizontalHeader().setSectionResizeMode(
+            4,
+            QtWidgets.QHeaderView.ResizeMode.Stretch,
+        )
+        self.page_task_table.setWordWrap(True)
+        self.preview_tabs = QtWidgets.QTabWidget()
+        self.preview_tabs.addTab(self.gallery, "图片预览")
+        self.preview_tabs.addTab(self.page_task_table, "页面任务")
         root.addWidget(scrollable_side_card(side))
-        root.addWidget(self.gallery, 1)
+        root.addWidget(self.preview_tabs, 1)
+        self.imported_cover_prompt = ""
 
     def set_models(self, models: list[str]) -> None:
         current = self.model_combo.currentText().strip()
@@ -1242,6 +1279,101 @@ class ImagePage(BaseGenerationPage):
             "image_output_dir",
             self.output_edit.text().strip(),
         )
+
+    def _on_generation_mode_changed(self) -> None:
+        imported = self.generation_mode_combo.currentData() == "imported"
+        self.copy_edit.setEnabled(not imported)
+        if hasattr(self, "preview_tabs"):
+            self.preview_tabs.setCurrentIndex(1 if imported else 0)
+        self.status_label.setText(
+            "已切换到导入提示词模式，请检查页面任务列表。"
+            if imported
+            else "已切换到自动生成提示词模式。"
+        )
+
+    def load_generation_package(
+        self,
+        original: OriginalContent,
+        *,
+        image_prompts: list[str],
+        image_style: str,
+    ) -> None:
+        self.generation_mode_combo.setCurrentIndex(
+            self.generation_mode_combo.findData("imported")
+        )
+        self.theme_edit.setText(original.title)
+        self.cover_title_edit.setText(original.cover_title or original.title)
+        if self.style_combo.findText(image_style) >= 0:
+            self.style_combo.setCurrentText(image_style)
+        self.page_task_table.setRowCount(len(original.pages))
+        for row, page in enumerate(original.pages):
+            values = [
+                str(row + 1),
+                str(page.get("heading", "")).strip(),
+                str(page.get("copy", "")).strip(),
+                str(page.get("on_image_text", "")).strip(),
+                image_prompts[row] if row < len(image_prompts) else "",
+            ]
+            for column, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem(value)
+                if column == 0:
+                    item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                self.page_task_table.setItem(row, column, item)
+            self.page_task_table.setRowHeight(row, 72)
+        self.imported_cover_prompt = build_cover_prompt(
+            original.title,
+            original.cover_title or original.title,
+            "",
+            image_style,
+        )
+        self.preview_tabs.setCurrentIndex(1)
+        self.status_label.setText(
+            "已导入爆款重构内容，生成时将使用页面任务中的生图提示词。"
+        )
+
+    def _build_imported_image_items(self) -> list[dict]:
+        theme = self.theme_edit.text().strip()
+        style = self.style_combo.currentText()
+        cover_title = self.cover_title_edit.text().strip() or theme
+        items: list[dict] = [
+            {
+                "title": f"封面_{cover_title}",
+                "style": style,
+                "prompt": self.imported_cover_prompt
+                or build_cover_prompt(
+                    theme,
+                    cover_title,
+                    self.cover_subtitle_edit.text().strip(),
+                    style,
+                ),
+                "size": "3:4",
+                "is_cover": True,
+            }
+        ]
+        for row in range(self.page_task_table.rowCount()):
+            heading_item = self.page_task_table.item(row, 1)
+            copy_item = self.page_task_table.item(row, 2)
+            on_image_item = self.page_task_table.item(row, 3)
+            prompt_item = self.page_task_table.item(row, 4)
+            heading = heading_item.text().strip() if heading_item else ""
+            copy = copy_item.text().strip() if copy_item else ""
+            on_image = on_image_item.text().strip() if on_image_item else ""
+            prompt = prompt_item.text().strip() if prompt_item else ""
+            if not prompt:
+                prompt = build_image_prompt(
+                    theme,
+                    copy or on_image or heading,
+                    style,
+                )
+            items.append(
+                {
+                    "title": heading or f"{theme}_图{row + 1}",
+                    "style": style,
+                    "prompt": prompt,
+                    "is_cover": False,
+                }
+            )
+        return items
 
     def update_reference_limit(self, model: str) -> None:
         limit = max_reference_images_for_model(model)
@@ -1393,13 +1525,21 @@ class ImagePage(BaseGenerationPage):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "参考图提示词不完整", str(exc))
             return
-        prompt = build_cover_prompt(
-            theme,
-            title,
-            subtitle,
-            style,
-            extra_prompt=reference_prompt,
-        )
+        if (
+            self.generation_mode_combo.currentData() == "imported"
+            and self.imported_cover_prompt
+        ):
+            prompt = self.imported_cover_prompt
+            if reference_prompt:
+                prompt += f" 补充要求：{reference_prompt}"
+        else:
+            prompt = build_cover_prompt(
+                theme,
+                title,
+                subtitle,
+                style,
+                extra_prompt=reference_prompt,
+            )
         item = {
             "title": f"封面_{title}",
             "style": style,
@@ -1421,9 +1561,21 @@ class ImagePage(BaseGenerationPage):
 
     def generate(self) -> None:
         theme = self.theme_edit.text().strip()
-        lines = [line.strip() for line in self.copy_edit.toPlainText().splitlines() if line.strip()]
-        if not lines:
+        imported_mode = self.generation_mode_combo.currentData() == "imported"
+        lines = [
+            line.strip()
+            for line in self.copy_edit.toPlainText().splitlines()
+            if line.strip()
+        ]
+        if not imported_mode and not lines:
             QtWidgets.QMessageBox.warning(self, "缺少文案", "请至少填写一行图片文案。")
+            return
+        if imported_mode and self.page_task_table.rowCount() == 0:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有页面任务",
+                "请先导入爆款重构内容，或切换到自动生成提示词模式。",
+            )
             return
         settings = self.current_settings()
         settings.update(
@@ -1440,14 +1592,20 @@ class ImagePage(BaseGenerationPage):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "参考图提示词不完整", str(exc))
             return
-        items = build_manual_image_items(
-            theme=theme,
-            page_lines=lines,
-            style=style,
-            cover_title=self.cover_title_edit.text().strip(),
-            cover_subtitle=self.cover_subtitle_edit.text().strip(),
-            reference_prompt=reference_prompt,
-        )
+        if imported_mode:
+            items = self._build_imported_image_items()
+            if reference_prompt:
+                for item in items:
+                    item["prompt"] += f" 补充要求：{reference_prompt}"
+        else:
+            items = build_manual_image_items(
+                theme=theme,
+                page_lines=lines,
+                style=style,
+                cover_title=self.cover_title_edit.text().strip(),
+                cover_subtitle=self.cover_subtitle_edit.text().strip(),
+                reference_prompt=reference_prompt,
+            )
         self.save_output_dir()
         output_base = Path(self.output_edit.text().strip() or settings["image_output_dir"])
         output_dir = output_base / f"图文_{datetime.now():%Y%m%d_%H%M%S}"
@@ -4644,6 +4802,9 @@ class HotContentPage(QtWidgets.QWidget):
                             original_page.get("heading", "")
                         ),
                         "copy": copy or str(original_page.get("copy", "")),
+                        "on_image_text": str(
+                            original_page.get("on_image_text", "")
+                        ),
                         "image_prompt": (
                             prompt_values[index]
                             if index < len(prompt_values)
@@ -4690,24 +4851,15 @@ class HotContentPage(QtWidgets.QWidget):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "没有原创内容", str(exc))
             return
-        page_lines = [
-            line.strip()
-            for line in self.page_script_edit.toPlainText().splitlines()
-            if line.strip()
-        ]
-        if not page_lines:
-            page_lines = [
-                line.strip()
-                for line in original.body.splitlines()
-                if line.strip()
-            ]
-        self.main_window.image_page.theme_edit.setText(original.title)
-        self.main_window.image_page.copy_edit.setPlainText("\n".join(page_lines))
-        self.main_window.image_page.cover_title_edit.setText(
-            original.cover_title or original.title
+        image_style = self.image_style_combo.currentText()
+        prompts = original.image_prompts(
+            theme=original.title,
+            style=image_style,
         )
-        self.main_window.image_page.style_combo.setCurrentText(
-            self.image_style_combo.currentText()
+        self.main_window.image_page.load_generation_package(
+            original,
+            image_prompts=prompts,
+            image_style=image_style,
         )
         self.main_window.stack.setCurrentIndex(0)
         self.main_window.nav_buttons[0].setChecked(True)

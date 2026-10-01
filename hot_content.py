@@ -164,6 +164,9 @@ def normalize_original_content(payload: dict) -> OriginalContent:
                     {
                         "heading": str(page.get("heading", "")).strip(),
                         "copy": str(page.get("copy", "")).strip(),
+                        "on_image_text": str(
+                            page.get("on_image_text", "")
+                        ).strip(),
                         "image_prompt": str(page.get("image_prompt", "")).strip(),
                     }
                 )
@@ -174,6 +177,7 @@ def normalize_original_content(payload: dict) -> OriginalContent:
             {
                 "heading": "",
                 "copy": line.strip(),
+                "on_image_text": "",
                 "image_prompt": line.strip(),
             }
             for line in body.splitlines()
@@ -240,6 +244,7 @@ def build_rewrite_prompt(
     {{
       "heading": "页面标题",
       "copy": "该页展示的原创文案",
+      "on_image_text": "图片中需要出现的中文大字",
       "image_prompt": "该页图片画面和中文文字排版描述"
     }}
   ],
@@ -330,6 +335,7 @@ def mock_original_content(
             {
                 "heading": heading,
                 "copy": copy,
+                "on_image_text": heading,
                 "image_prompt": (
                     f"第{index}页，围绕“{fact}”设计中文知识图文，"
                     f"标题为“{heading}”，画面干净、层次清晰。"

@@ -184,6 +184,52 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(page.reference_template_button.isHidden())
         window.close()
 
+    def test_image_page_imported_prompt_mode(self):
+        window = MainWindow()
+        page = window.image_page
+        original = OriginalContent(
+            title="原创标题",
+            body="原创正文",
+            tags=["肛周护理"],
+            cover_title="封面临",
+            pages=[
+                {
+                    "heading": "第一页",
+                    "copy": "第一页文案",
+                    "on_image_text": "保持清爽",
+                    "image_prompt": "生成一张3:4竖版中文知识科普图。主题：原创标题。",
+                }
+            ],
+        )
+        page.load_generation_package(
+            original,
+            image_prompts=["生成一张3:4竖版中文知识科普图。主题：原创标题。"],
+            image_style="手绘卡通",
+        )
+        self.assertEqual(
+            page.generation_mode_combo.currentData(),
+            "imported",
+        )
+        self.assertEqual(page.page_task_table.rowCount(), 1)
+        self.assertEqual(page.preview_tabs.currentIndex(), 1)
+        captured: dict = {}
+
+        def capture_worker(kind, settings, payload):
+            captured.update(
+                {"kind": kind, "settings": settings, "payload": payload}
+            )
+
+        page.start_worker = capture_worker
+        page.generate()
+        self.assertEqual(captured["kind"], "manual_images")
+        items = captured["payload"]["items"]
+        self.assertEqual(len(items), 2)
+        self.assertEqual(
+            items[1]["prompt"],
+            "生成一张3:4竖版中文知识科普图。主题：原创标题。",
+        )
+        window.close()
+
     def test_image_reference_limit_is_enforced_by_client(self):
         client = APIMartClient(APIConfig(api_key="test"))
         with self.assertRaisesRegex(APIClientError, "最多使用 5 张参考图"):
@@ -1394,6 +1440,8 @@ class CoreTests(unittest.TestCase):
         window.image_page.cover_title_edit.setText("测试封面标题超过十四个汉字需要提醒用户")
         self.assertEqual(window.image_page.cover_counter_label.text(), "19/14")
         self.assertEqual(window.image_page.cover_button.text(), "生成封面图")
+        self.assertEqual(window.image_page.generation_mode_combo.count(), 2)
+        self.assertEqual(window.image_page.preview_tabs.count(), 2)
         self.assertTrue(window.video_page.output_edit.text())
         self.assertTrue(window.batch_page.output_edit.text())
         test_catalog = {
