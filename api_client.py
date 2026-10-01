@@ -397,6 +397,7 @@ class APIMartClient:
         model: str,
         size: str,
         resolution: str,
+        quality: str | None = None,
         image_urls: list[str] | None = None,
         nsfw_check: bool = True,
     ) -> str:
@@ -408,6 +409,8 @@ class APIMartClient:
             "resolution": self._normalize_image_resolution(model, resolution),
             "nsfw_check": nsfw_check,
         }
+        if quality:
+            payload["quality"] = quality
         if image_urls:
             limit = max_reference_images_for_model(model)
             if limit <= 0:

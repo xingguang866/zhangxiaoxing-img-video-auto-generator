@@ -106,6 +106,14 @@ VIDEO_MODELS = [
 ]
 IMAGE_SIZES = ["3:4", "4:5", "9:16", "1:1", "16:9"]
 IMAGE_RESOLUTIONS = ["1k", "2k", "4k"]
+IMAGE_QUALITY_OPTIONS = [
+    ("低", "low"),
+    ("中", "medium"),
+    ("高", "high"),
+    ("极高", "xhigh"),
+    ("最高", "max"),
+    ("自动", "auto"),
+]
 VIDEO_SIZES = ["9:16", "16:9", "1:1", "3:4", "adaptive"]
 VIDEO_RESOLUTIONS = ["720p", "1080p", "480p", "4k"]
 MODEL_CATEGORY_LABELS = {
@@ -388,6 +396,7 @@ class GenerationWorker(QtCore.QThread):
         *,
         size: str | None = None,
         resolution: str | None = None,
+        quality: str | None = None,
         image_urls: list[str] | None = None,
     ) -> tuple[Path, str]:
         task_id = client.submit_image(
@@ -395,6 +404,7 @@ class GenerationWorker(QtCore.QThread):
             model=self.settings["image_model"],
             size=size or self.settings["image_size"],
             resolution=resolution or self.settings["image_resolution"],
+            quality=quality,
             image_urls=image_urls,
         )
         self.signals.log.emit(f"图片任务已提交：{task_id}")
@@ -529,6 +539,7 @@ class GenerationWorker(QtCore.QThread):
                     destination,
                     size=item.get("size"),
                     resolution=item.get("resolution"),
+                    quality=self.settings.get("image_quality"),
                     image_urls=reference_urls or None,
                 )
             generated += 1
@@ -1033,15 +1044,26 @@ class ImagePage(BaseGenerationPage):
         self.model_combo.setEditable(True)
         self.model_combo.addItems(IMAGE_MODELS)
         self.model_combo.setCurrentText(IMAGE_MODELS[0])
+        self.quality_combo = QtWidgets.QComboBox()
+        for label, value in IMAGE_QUALITY_OPTIONS:
+            self.quality_combo.addItem(label, value)
+        self.quality_combo.setCurrentIndex(
+            self.quality_combo.findData("medium")
+        )
         self.size_combo = QtWidgets.QComboBox()
         self.size_combo.addItems(IMAGE_SIZES)
         self.resolution_combo = QtWidgets.QComboBox()
         self.resolution_combo.addItems(IMAGE_RESOLUTIONS)
         form.addRow("图片风格", self.style_combo)
         form.addRow("图片模型", self.model_combo)
+        form.addRow("质量", self.quality_combo)
         form.addRow("画面比例", self.size_combo)
         form.addRow("清晰度", self.resolution_combo)
         side_layout.addLayout(form)
+        self.model_combo.currentTextChanged.connect(
+            self.update_image_quality_control
+        )
+        self.update_image_quality_control(self.model_combo.currentText())
 
         reference_header = QtWidgets.QHBoxLayout()
         reference_header.addWidget(section_label("参考图"))
@@ -1170,6 +1192,21 @@ class ImagePage(BaseGenerationPage):
         self.model_combo.setCurrentText(target)
         self.model_combo.blockSignals(False)
         self.update_reference_limit(target)
+        self.update_image_quality_control(target)
+
+    def update_image_quality_control(self, model: str) -> None:
+        supported = model.strip().lower().startswith("gpt-image-2.5")
+        self.quality_combo.setEnabled(supported)
+        self.quality_combo.setToolTip(
+            "质量参数仅用于 gpt-image-2.5 系列模型。"
+            if supported
+            else "当前图片模型不支持质量参数。"
+        )
+
+    def selected_image_quality(self) -> str | None:
+        if not self.quality_combo.isEnabled():
+            return None
+        return str(self.quality_combo.currentData() or "") or None
 
     def connect_worker(self, worker: GenerationWorker) -> None:
         super().connect_worker(worker)
@@ -1338,6 +1375,7 @@ class ImagePage(BaseGenerationPage):
                 "image_model": self.model_combo.currentText().strip(),
                 "image_size": "3:4",
                 "image_resolution": self.resolution_combo.currentText(),
+                "image_quality": self.selected_image_quality(),
             }
         )
         style = self.style_combo.currentText()
@@ -1384,6 +1422,7 @@ class ImagePage(BaseGenerationPage):
                 "image_model": self.model_combo.currentText().strip(),
                 "image_size": self.size_combo.currentText(),
                 "image_resolution": self.resolution_combo.currentText(),
+                "image_quality": self.selected_image_quality(),
             }
         )
         style = self.style_combo.currentText()

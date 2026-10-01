@@ -183,6 +183,44 @@ class CoreTests(unittest.TestCase):
                 image_urls=[f"https://example.com/{index}.png" for index in range(6)],
             )
 
+    def test_gpt_image_25_quality_payload_and_controls(self):
+        client = APIMartClient(APIConfig(api_key="test"))
+        with patch.object(
+            client,
+            "_request",
+            return_value={"data": [{"task_id": "quality-task"}]},
+        ) as request:
+            task_id = client.submit_image(
+                prompt="测试质量参数",
+                model="gpt-image-2.5-flare",
+                size="3:4",
+                resolution="1k",
+                quality="xhigh",
+            )
+        self.assertEqual(task_id, "quality-task")
+        payload = request.call_args.kwargs["json_body"]
+        self.assertEqual(payload["quality"], "xhigh")
+
+        window = MainWindow()
+        page = window.image_page
+        page.model_combo.setCurrentText("gpt-image-2.5-flare")
+        self.assertTrue(page.quality_combo.isEnabled())
+        self.assertEqual(
+            [
+                page.quality_combo.itemData(index)
+                for index in range(page.quality_combo.count())
+            ],
+            ["low", "medium", "high", "xhigh", "max", "auto"],
+        )
+        page.quality_combo.setCurrentIndex(
+            page.quality_combo.findData("xhigh")
+        )
+        self.assertEqual(page.selected_image_quality(), "xhigh")
+        page.model_combo.setCurrentText("z-image-turbo")
+        self.assertFalse(page.quality_combo.isEnabled())
+        self.assertIsNone(page.selected_image_quality())
+        window.close()
+
     def test_batch_jobs_include_large_title_cover(self):
         item = BatchItem(
             index=1,
