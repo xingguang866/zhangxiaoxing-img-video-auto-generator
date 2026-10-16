@@ -90,15 +90,6 @@ def find_uv() -> str:
     )
 
 
-def find_edge() -> str:
-    return _first_existing(
-        [
-            Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
-            Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
-        ]
-    )
-
-
 def find_static_ffmpeg_tools() -> tuple[str, str]:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
@@ -317,9 +308,6 @@ def configure_local_profile(project_dir: str | Path) -> Path:
     if not profile.exists():
         raise RuntimeError("未找到 hypit.runtime.json，请先初始化 Runtime。")
     info = environment()
-    edge = find_edge()
-    if not edge:
-        raise RuntimeError("未找到 Microsoft Edge，无法配置本地渲染浏览器。")
     if not info.ffmpeg or not info.ffprobe:
         raise RuntimeError("未找到 FFmpeg 或 FFprobe。")
 
@@ -334,10 +322,12 @@ def configure_local_profile(project_dir: str | Path) -> Path:
         {"use": "@hypit/provider-hyperframes-local"},
     )
     config = hyperframes.setdefault("config", {})
+    # 不设置 chromePath：本机 Edge 在已有实例运行时 "--version" 无输出，
+    # Hypit 会判定渲染浏览器不可用。交由 HyperFrames 自行管理 Chrome Headless Shell。
+    config.pop("chromePath", None)
     config.update(
         {
             "nodePath": info.node,
-            "chromePath": edge,
             "ffmpegPath": info.ffmpeg,
             "ffprobePath": info.ffprobe,
             "browserGpu": "software",
@@ -357,6 +347,16 @@ def configure_local_profile(project_dir: str | Path) -> Path:
         encoding="utf-8",
     )
     return profile
+
+
+def prepare_render_environment(
+    project_dir: str | Path,
+) -> subprocess.CompletedProcess[str]:
+    return run_hypit(
+        ["runtime", "up", "--endpoint", "hyperframes.local"],
+        cwd=project_dir,
+        timeout=1800,
+    )
 
 
 def install_apib_provider(project_dir: str | Path) -> Path:

@@ -97,7 +97,7 @@ def generate_tutorial_assets() -> dict[str, Path]:
     _arrow(draw, (780, 340), (830, 340))
     assets["provider"] = _save(image, ASSET_DIR / "02_provider.png")
 
-    image, draw = _base("3. 初始化并准备 Runtime", "本地 Node、FFmpeg、Edge 和 OpenCV 组成执行环境")
+    image, draw = _base("3. 初始化并准备 Runtime", "本地 Node、FFmpeg、渲染浏览器和 OpenCV 组成执行环境")
     _card(draw, (70, 170, 520, 510), "点击顺序", ["1. 初始化 Runtime", "2. 准备 Runtime", "3. Doctor"], accent="#F6B6CC")
     _card(draw, (570, 170, 1130, 510), "通过标志", ["Local Runtime ready", "Worker running", "Programs 2/2 ready"], accent="#A7D8C5")
     assets["runtime"] = _save(image, ASSET_DIR / "03_runtime.png")
@@ -260,11 +260,11 @@ def build_tutorial_html() -> str:
       {image("runtime", "初始化 Runtime")}
       <ol>
         <li>点击“初始化 Runtime”。</li>
-        <li>软件自动配置 Edge、FFmpeg、FFprobe 和本地 OpenCV。</li>
+        <li>软件自动配置 Node、FFmpeg、FFprobe 和本地 OpenCV。</li>
         <li>点击“准备 Runtime”，启动本地 Worker。</li>
         <li>点击 Doctor，确认退出码为 0。</li>
       </ol>
-      <div class="tip">本机渲染使用 Microsoft Edge，不需要下载 Chrome Headless Shell。</div>
+      <div class="tip">首次准备 Runtime 会下载 Chrome Headless Shell 渲染浏览器，之后重复使用本地缓存。</div>
 
       <h2>4. 选择 .svrun 并执行 Plan</h2>
       {image("plan", "执行 Plan")}

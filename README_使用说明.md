@@ -228,7 +228,7 @@ API Key 使用 Qt 本机设置保存，不会写入源码文件。
 - Node.js 22.15+
 - pnpm 10.33
 - FFmpeg 和 FFprobe
-- 本机 Microsoft Edge 作为本地渲染浏览器
+- Hypit 托管的 Chrome Headless Shell 作为本地渲染浏览器
 
 栏目提供：
 
@@ -254,7 +254,7 @@ API Key 使用 Qt 本机设置保存，不会写入源码文件。
 - `runtime up` 成功
 - Runtime Worker 运行中
 - 本地 Programs `2/2 ready`
-- Edge 截图渲染成功
+- 渲染浏览器截图成功
 - MP4 媒体探测成功
 - 视频关键帧提取成功
 

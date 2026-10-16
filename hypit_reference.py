@@ -22,6 +22,7 @@ from hypit_service import (
     configure_local_profile,
     environment,
     initialize_project,
+    prepare_render_environment,
     run_hypit,
 )
 
@@ -244,6 +245,14 @@ def prepare_reference_workspace(
         )
     notify("正在准备本地渲染组件...")
     configure_local_profile(workspace)
+    notify("正在准备本地渲染浏览器...")
+    browser_result = prepare_render_environment(workspace)
+    if browser_result.returncode != 0:
+        raise ReferenceWorkflowError(
+            browser_result.stderr.strip()
+            or browser_result.stdout.strip()
+            or "本地渲染浏览器准备失败。"
+        )
     return workspace
 
 

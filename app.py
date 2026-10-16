@@ -71,6 +71,14 @@ from jianying_service import (
     launch_jianying,
 )
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
+from crebee_client import (
+    DEFAULT_CREBEE_BASE_URL,
+    CreBeeClient,
+    CreBeeError,
+    account_label,
+    build_publish_payload,
+    summarize_publish_result,
+)
 from pricing_utils import format_balance, format_billing, format_pricing, format_usage
 from prompts import (
     STYLE_PROMPTS,
@@ -2721,7 +2729,7 @@ class HypitInitializeThread(QtCore.QThread):
             if result.returncode != 0:
                 raise RuntimeError(result.stderr.strip() or "Runtime 初始化失败。")
             profile = configure_local_profile(self.project_dir)
-            self.line.emit(f"已配置本地 Edge、FFmpeg 和 FFprobe：{profile}")
+            self.line.emit(f"已配置本地 Node、FFmpeg 和 FFprobe：{profile}")
             self.finished.emit(True)
         except Exception as exc:
             self.error.emit(str(exc))
@@ -3291,6 +3299,33 @@ class PlatformLoginThread(QtCore.QThread):
             self.result.emit(False, str(exc))
 
 
+class CreBeeThread(QtCore.QThread):
+    result = QtCore.Signal(dict)
+    error = QtCore.Signal(str)
+
+    def __init__(
+        self,
+        action: str,
+        base_url: str,
+        payload: dict | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.action = action
+        self.base_url = base_url
+        self.payload = payload or {}
+
+    def run(self) -> None:
+        try:
+            client = CreBeeClient(self.base_url)
+            if self.action == "accounts":
+                self.result.emit({"accounts": client.accounts()})
+            else:
+                self.result.emit(client.publish_batch(self.payload))
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 class PublishPage(QtWidgets.QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -3300,6 +3335,7 @@ class PublishPage(QtWidgets.QWidget):
         self.assist_thread: PublishAssistThread | None = None
         self.login_thread: PlatformLoginThread | None = None
         self.batch_prepare_thread: BatchPublishQueueThread | None = None
+        self.crebee_thread: CreBeeThread | None = None
         self.drafts: list[PublishDraft] = []
         self.current_draft_id = ""
 
@@ -3598,9 +3634,168 @@ class PublishPage(QtWidgets.QWidget):
             )
             scroll_page.setWidget(page)
             self.tabs.addTab(scroll_page, profile.name)
+        self.tabs.addTab(self._build_crebee_page(), "三方发布")
         self.tabs.setCurrentIndex(list(PLATFORMS).index("xiaohongshu"))
         root.addWidget(scrollable_side_card(side))
         root.addWidget(self.tabs, 1)
+
+    def _build_crebee_page(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(section_label("三方发布"))
+        layout.addWidget(
+            hint_label(
+                "本栏目通过本地三方发布服务提交，直接调用发布接口，"
+                "其它平台的浏览器辅助发布方式保持不变。"
+            )
+        )
+        layout.addWidget(QtWidgets.QLabel("接口地址"))
+        self.crebee_base_url_edit = QtWidgets.QLineEdit(DEFAULT_CREBEE_BASE_URL)
+        layout.addWidget(self.crebee_base_url_edit)
+        docs_button = QtWidgets.QPushButton("打开接口文档")
+        docs_button.setObjectName("secondaryButton")
+        docs_button.clicked.connect(self.open_crebee_docs)
+        layout.addWidget(docs_button)
+
+        layout.addWidget(QtWidgets.QLabel("发布账号"))
+        account_row = QtWidgets.QHBoxLayout()
+        self.crebee_account_combo = QtWidgets.QComboBox()
+        refresh_button = QtWidgets.QPushButton("刷新账号")
+        refresh_button.setObjectName("secondaryButton")
+        refresh_button.clicked.connect(self.refresh_crebee_accounts)
+        account_row.addWidget(self.crebee_account_combo, 1)
+        account_row.addWidget(refresh_button)
+        layout.addLayout(account_row)
+
+        layout.addWidget(section_label("发布设置"))
+        schedule_row = QtWidgets.QHBoxLayout()
+        self.crebee_schedule_check = QtWidgets.QCheckBox("定时发布")
+        self.crebee_schedule_edit = QtWidgets.QDateTimeEdit(
+            QtCore.QDateTime.currentDateTime().addSecs(3600)
+        )
+        self.crebee_schedule_edit.setCalendarPopup(True)
+        self.crebee_schedule_edit.setDisplayFormat(PUBLISH_SCHEDULE_DISPLAY_FORMAT)
+        self.crebee_schedule_edit.setMinimumDateTime(
+            QtCore.QDateTime.currentDateTime().addSecs(3600)
+        )
+        self.crebee_schedule_edit.setMaximumDateTime(
+            QtCore.QDateTime.currentDateTime().addDays(14)
+        )
+        self.crebee_schedule_edit.setEnabled(False)
+        self.crebee_schedule_check.toggled.connect(
+            self.crebee_schedule_edit.setEnabled
+        )
+        schedule_row.addWidget(self.crebee_schedule_check)
+        schedule_row.addWidget(self.crebee_schedule_edit, 1)
+        layout.addLayout(schedule_row)
+        layout.addWidget(
+            hint_label(
+                "标题、正文、标签和素材取自左侧草稿；不勾选定时发布时立即提交。"
+            )
+        )
+
+        self.crebee_submit_button = QtWidgets.QPushButton("提交到三方平台")
+        self.crebee_submit_button.setObjectName("primaryButton")
+        self.crebee_submit_button.setMinimumHeight(46)
+        self.crebee_submit_button.clicked.connect(self.submit_crebee_publish)
+        layout.addWidget(self.crebee_submit_button)
+
+        layout.addWidget(section_label("提交结果"))
+        self.crebee_result = QtWidgets.QPlainTextEdit()
+        self.crebee_result.setReadOnly(True)
+        layout.addWidget(self.crebee_result, 1)
+        return page
+
+    def _crebee_base_url(self) -> str:
+        return self.crebee_base_url_edit.text().strip() or DEFAULT_CREBEE_BASE_URL
+
+    def open_crebee_docs(self) -> None:
+        QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl(f"{self._crebee_base_url().rstrip('/')}/api-docs")
+        )
+
+    def refresh_crebee_accounts(self) -> None:
+        if thread_is_running(self.crebee_thread):
+            QtWidgets.QMessageBox.information(
+                self, "正在读取账号", "请等待当前三方发布请求完成。"
+            )
+            return
+        self.crebee_result.setPlainText("正在读取三方发布账号...")
+        self.crebee_thread = CreBeeThread(
+            "accounts", self._crebee_base_url(), parent=self
+        )
+        self.crebee_thread.result.connect(self._on_crebee_accounts)
+        self.crebee_thread.error.connect(self._on_crebee_error)
+        self.crebee_thread.start()
+
+    def _on_crebee_accounts(self, payload: dict) -> None:
+        accounts = payload.get("accounts") or []
+        self.crebee_account_combo.clear()
+        for account in accounts:
+            self.crebee_account_combo.addItem(account_label(account), account)
+        if not accounts:
+            self.crebee_result.setPlainText(
+                "三方发布服务里还没有绑定账号，请先在服务端绑定平台账号后重新刷新。"
+            )
+            return
+        self.crebee_result.setPlainText(f"已读取 {len(accounts)} 个三方发布账号。")
+
+    def submit_crebee_publish(self) -> None:
+        if thread_is_running(self.crebee_thread):
+            QtWidgets.QMessageBox.information(
+                self, "正在提交", "请等待当前三方发布请求完成。"
+            )
+            return
+        self._capture_current_draft()
+        account = self.crebee_account_combo.currentData()
+        if not account:
+            QtWidgets.QMessageBox.warning(
+                self, "缺少账号", "请先刷新并选择一个三方发布账号。"
+            )
+            return
+        media = self.selected_media()
+        if not media:
+            QtWidgets.QMessageBox.warning(
+                self, "缺少素材", "请上传或载入图片、视频。"
+            )
+            return
+        scheduled_at = (
+            self.crebee_schedule_edit.dateTime().toPython()
+            if self.crebee_schedule_check.isChecked()
+            else None
+        )
+        try:
+            payload = build_publish_payload(
+                account=account,
+                title=self.title_edit.text().strip(),
+                description=self.description_edit.toPlainText().strip(),
+                tags=[
+                    tag.strip().lstrip("#")
+                    for tag in re.split(r"[\s,，、;；#]+", self.tags_edit.text())
+                    if tag.strip().lstrip("#")
+                ],
+                media_paths=media,
+                scheduled_at=scheduled_at,
+            )
+        except CreBeeError as exc:
+            QtWidgets.QMessageBox.warning(self, "无法提交", str(exc))
+            return
+        self.crebee_result.setPlainText("正在提交到三方平台...")
+        self.crebee_thread = CreBeeThread(
+            "publish", self._crebee_base_url(), payload, parent=self
+        )
+        self.crebee_thread.result.connect(self._on_crebee_publish)
+        self.crebee_thread.error.connect(self._on_crebee_error)
+        self.crebee_thread.start()
+
+    def _on_crebee_publish(self, payload: dict) -> None:
+        self.crebee_result.setPlainText(summarize_publish_result(payload))
+        self.status_label.setText("三方发布已提交")
+
+    def _on_crebee_error(self, message: str) -> None:
+        self.crebee_result.setPlainText(f"三方发布失败：{message}")
 
     def add_drafts(self, drafts: list[PublishDraft]) -> None:
         existing_ids = {draft.draft_id for draft in self.drafts}
@@ -3977,8 +4172,11 @@ class PublishPage(QtWidgets.QWidget):
             for index in range(self.media_list.count())
         ]
         platform_keys = list(PLATFORMS)
-        current_key = platform_keys[self.tabs.currentIndex()]
-        current_widgets = self.platform_widgets[current_key]
+        current_index = self.tabs.currentIndex()
+        current_key = (
+            platform_keys[current_index] if current_index < len(platform_keys) else ""
+        )
+        current_widgets = self.platform_widgets.get(current_key) or {}
         if (
             current_widgets.get("supports_schedule")
             and current_widgets["schedule_check"].isChecked()

@@ -44,6 +44,14 @@ from browser_assistant import (
     select_douyin_music,
 )
 from jianying_service import create_jianying_draft
+from crebee_client import (
+    CreBeeError,
+    account_identifier,
+    account_label,
+    build_publish_payload,
+    parse_accounts,
+    summarize_publish_result,
+)
 from hypit_service import (
     environment as hypit_environment,
     hypit_version,
@@ -758,6 +766,108 @@ class CoreTests(unittest.TestCase):
         self.assertIn("修正方法", status_item.toolTip())
         window.close()
 
+    def test_crebee_image_payload_uses_account_and_tags(self):
+        account = {
+            "account_key": "xhs-account-key",
+            "account_id": "xhs-account-id",
+            "account_alias": "张小星",
+            "account_platform": "xiaohongshu",
+            "account_status": "connected",
+        }
+        self.assertEqual(account_identifier(account), "xhs-account-id")
+        self.assertIn("张小星", account_label(account))
+        self.assertIn("xiaohongshu", account_label(account))
+
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / "原图01.png"
+            image.write_bytes(b"fake-image")
+            payload = build_publish_payload(
+                account=account,
+                title="久坐党护理",
+                description="正文",
+                tags=["肛周护理", "久坐党"],
+                media_paths=[image],
+                scheduled_at=datetime(2026, 10, 20, 19, 30),
+                task_id="task-1",
+            )
+
+        self.assertEqual(payload["contentType"], "image")
+        self.assertEqual(payload["commonForm"]["taskId"], "task-1")
+        self.assertEqual(payload["commonForm"]["images"], [str(image)])
+        task = payload["tasks"][0]
+        self.assertEqual(task["accountId"], "xhs-account-id")
+        self.assertEqual(task["platform"], "xiaohongshu")
+        self.assertEqual(task["contentType"], "image")
+        self.assertEqual(task["params"]["topics"], ["肛周护理", "久坐党"])
+        self.assertEqual(
+            task["params"]["timing"],
+            int(datetime(2026, 10, 20, 19, 30).timestamp()),
+        )
+
+    def test_crebee_video_payload_requires_cover_and_summarizes_result(self):
+        account = {
+            "account_key": "key-2",
+            "account_id": "id-2",
+            "account_platform": "xiaohongshu",
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            video = Path(temp) / "video.mp4"
+            video.write_bytes(b"fake-video")
+            with self.assertRaises(CreBeeError):
+                build_publish_payload(
+                    account=account,
+                    title="标题",
+                    description="正文",
+                    tags=[],
+                    media_paths=[video],
+                )
+            cover = Path(temp) / "cover.png"
+            cover.write_bytes(b"fake-cover")
+            payload = build_publish_payload(
+                account=account,
+                title="标题",
+                description="正文",
+                tags=[],
+                media_paths=[video, cover],
+                task_id="task-2",
+            )
+
+        self.assertEqual(payload["contentType"], "video")
+        self.assertEqual(payload["commonForm"]["videoPath"], str(video))
+        self.assertEqual(payload["commonForm"]["coverPath"], str(cover))
+        self.assertEqual(payload["tasks"][0]["params"]["timing"], 0)
+
+        summary = summarize_publish_result(
+            {
+                "code": 0,
+                "message": "已提交",
+                "raw": {
+                    "total": 1,
+                    "success": 0,
+                    "failed": 1,
+                    "results": [
+                        {
+                            "accountId": "key-2",
+                            "platform": "xiaohongshu",
+                            "status": "failed",
+                            "error": "账号未绑定",
+                        }
+                    ],
+                },
+            }
+        )
+        self.assertIn("已提交", summary)
+        self.assertIn("[失败]", summary)
+        self.assertIn("账号未绑定", summary)
+
+    def test_crebee_account_list_parsing(self):
+        payload = {
+            "code": 0,
+            "raw": {"items": [{"account_key": "a"}, {"account_key": "b"}]},
+        }
+        self.assertEqual(len(parse_accounts(payload)), 2)
+        self.assertEqual(parse_accounts({}), [])
+
     def test_generation_pages_have_publish_entry_buttons(self):
         window = MainWindow()
         self.app.processEvents()
@@ -916,7 +1026,7 @@ class CoreTests(unittest.TestCase):
             self.assertGreater(thumbnail.stat().st_size, 1_000)
 
     def test_material_library_import(self):
-        source = self.root.parent / "肛周健康科普素材库_60条_含生图提示词.csv"
+        source = self.root / "肛周健康科普素材库_60条_含生图提示词.csv"
         self.assertTrue(source.exists(), source)
         items = load_batch_items(source, default_style="手绘卡通")
         self.assertEqual(len(items), 60)
@@ -1484,7 +1594,11 @@ class CoreTests(unittest.TestCase):
         )
         self.assertIs(window.stack.currentWidget(), window.hot_content_page)
         self.assertEqual(window.models_page.tabs.count(), 4)
-        self.assertEqual(window.publish_page.tabs.count(), 5)
+        self.assertEqual(window.publish_page.tabs.count(), 6)
+        self.assertEqual(
+            window.publish_page.tabs.tabText(5),
+            "三方发布",
+        )
         self.assertEqual(
             window.hot_content_page.collection_mode_combo.count(),
             2,
