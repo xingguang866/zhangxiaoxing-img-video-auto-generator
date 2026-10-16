@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtWidgets
 from openpyxl import Workbook
-from PIL import Image
+from PIL import Image, ImageDraw
 from playwright.sync_api import sync_playwright
 
 from api_client import APIClientError, APIConfig, APIMartClient
@@ -95,6 +95,7 @@ from hot_content import (
     mock_original_content,
     normalize_image_copy_payload,
     shuffle_tags,
+    strip_signature_lines,
 )
 from image_reference import (
     build_reference_instruction,
@@ -123,9 +124,25 @@ from xhs_collector import (
     _extract_detail,
     _extract_visible_cards,
     _login_required,
+    clean_note_title,
     download_note_images,
+    is_flat_placeholder,
+    is_note_image_url,
+    is_useful_note_image,
     normalize_xhs_url,
 )
+
+
+def _note_like_png(width: int = 900, height: int = 1200) -> bytes:
+    """构造一张多色图片，避免被“纯色占位图”规则过滤。"""
+    buffer = BytesIO()
+    with Image.new("RGB", (width, height), "#F6D9E0") as image:
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((60, 80, width - 60, 420), fill="#FFFFFF")
+        draw.rectangle((60, 520, width - 60, height - 80), fill="#F45D8D")
+        draw.ellipse((120, 160, 320, 360), fill="#2B6CB0")
+        image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class CoreTests(unittest.TestCase):
@@ -1760,6 +1777,92 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(original.title)
         self.assertGreaterEqual(len(original.pages), 4)
 
+    def test_rewrite_prompt_strips_authorship_content(self):
+        body = (
+            "肛周脓肿早期要注意，别硬扛。\n"
+            "作者：南方医院消化内科 张三\n"
+            "本文由南方医院消化内科审核\n"
+            "@南方医院消化内科\n"
+            "平时少吃辣，多喝水。\n"
+            "来源：小红书"
+        )
+        self.assertEqual(
+            strip_signature_lines(body),
+            "肛周脓肿早期要注意，别硬扛。\n平时少吃辣，多喝水。",
+        )
+        cleaned = strip_signature_lines(body)
+        self.assertNotIn("张三", cleaned)
+        self.assertNotIn("南方医院", cleaned)
+        prompt = build_rewrite_prompt(
+            HotContentItem(
+                source_mode="链接采集",
+                title="久坐党护理",
+                body=body,
+                tags=["肛周护理"],
+            ),
+            reference_content="参考内容",
+            product_info="",
+            audience="",
+            style="小红书风格",
+            target_word_count=300,
+        )
+        self.assertIn("去掉署名类内容", prompt)
+        self.assertIn("医生提醒", prompt)
+        self.assertNotIn("张三", prompt)
+        self.assertNotIn("南方医院消化内科审核", prompt)
+        image_copy_prompt = build_image_copy_prompt(
+            HotContentItem(source_mode="链接采集", title="久坐党护理"),
+            image_analysis=["图中文字：1. 标题：别反复摩擦"],
+            style="小红书风格",
+            product_info="",
+            audience="",
+        )
+        self.assertIn("去掉署名类内容", image_copy_prompt)
+
+    def test_generated_body_drops_signature_lines(self):
+        class StubClient:
+            def chat_completion(self, **kwargs) -> str:
+                return json.dumps(
+                    {
+                        "title": "久坐党护理",
+                        "cover_title": "久坐党护理",
+                        "body": "别硬扛。\n作者：南方医院消化内科 张三\n多喝水。",
+                        "tags": ["肛周护理"],
+                        "pages": [
+                            {
+                                "heading": "别硬扛",
+                                "copy": "别硬扛。",
+                                "on_image_text": "别硬扛",
+                                "image_prompt": "生成一张3:4竖版图。",
+                            }
+                        ],
+                        "video_prompt": "镜头推进。",
+                    },
+                    ensure_ascii=False,
+                )
+
+        original = generate_original_content(
+            HotContentItem(
+                source_mode="链接采集",
+                title="久坐党护理",
+                tags=["肛周护理"],
+            ),
+            reference_content="参考内容",
+            product_info="",
+            audience="",
+            style="小红书风格",
+            target_word_count=200,
+            text_model="gpt-4o-mini",
+            settings={
+                "mock_mode": False,
+                "base_url": "https://api.apib.ai/v1",
+                "api_key": "test-key",
+            },
+            client=StubClient(),
+        )
+        self.assertEqual(original.body, "别硬扛。\n多喝水。")
+        self.assertNotIn("南方医院", original.body)
+
     def test_replicate_reference_instruction(self):
         text = build_reference_instruction("replicate", image_count=2)
         self.assertIn("复刻", text)
@@ -1790,10 +1893,11 @@ class CoreTests(unittest.TestCase):
             browser.close()
 
     def test_download_note_images_saves_files(self):
-        buffer = BytesIO()
-        with Image.new("RGB", (24, 24), "white") as image:
-            image.save(buffer, format="PNG")
-        payload = buffer.getvalue()
+        payload = _note_like_png()
+        icon_buffer = BytesIO()
+        with Image.new("RGB", (64, 64), "white") as icon:
+            icon.save(icon_buffer, format="PNG")
+        icon_payload = icon_buffer.getvalue()
 
         class FakeResponse:
             ok = True
@@ -1802,10 +1906,16 @@ class CoreTests(unittest.TestCase):
             def body(self) -> bytes:
                 return payload
 
+        class FakeIconResponse(FakeResponse):
+            def body(self) -> bytes:
+                return icon_payload
+
         class FakeRequest:
             def get(self, url: str, **kwargs):
-                if url.endswith("bad"):
+                if url.endswith("/bad"):
                     raise RuntimeError("下载失败")
+                if "/icon" in url:
+                    return FakeIconResponse()
                 return FakeResponse()
 
         class FakeContext:
@@ -1816,14 +1926,57 @@ class CoreTests(unittest.TestCase):
                 FakeContext(),
                 [
                     "https://sns-webpic-qc.xhscdn.com/note-1",
+                    "https://sns-webpic-qc.xhscdn.com/icon-1",
                     "https://sns-webpic-qc.xhscdn.com/bad",
+                    "https://sns-webpic-qc.xhscdn.com/note-2",
                 ],
                 Path(temp),
             )
-            self.assertEqual(len(saved), 1)
-            self.assertTrue(saved[0].endswith(".jpg"))
+            self.assertEqual(len(saved), 2)
+            self.assertEqual(
+                [Path(path).name for path in saved],
+                ["原图01.jpg", "原图02.jpg"],
+            )
             with Image.open(saved[0]) as image:
                 self.assertEqual(image.format, "JPEG")
+                self.assertEqual(image.size, (900, 1200))
+
+    def test_note_image_filters_skip_icons_and_stickers(self):
+        self.assertTrue(is_useful_note_image(900, 1200))
+        self.assertFalse(is_useful_note_image(64, 64))
+        self.assertFalse(is_useful_note_image(1080, 120))
+        with Image.open(BytesIO(_note_like_png())) as photo:
+            self.assertFalse(is_flat_placeholder(photo))
+        with Image.new("RGB", (600, 600), "white") as solid:
+            self.assertTrue(is_flat_placeholder(solid))
+        with Image.new("RGB", (600, 600), "#123A6B") as placeholder:
+            ImageDraw.Draw(placeholder).polygon(
+                [(300, 150), (450, 450), (150, 450)],
+                fill="#FFFFFF",
+            )
+            self.assertTrue(is_flat_placeholder(placeholder))
+        self.assertFalse(
+            is_note_image_url("https://sns-avatar-qc.xhscdn.com/avatar/1")
+        )
+        self.assertFalse(
+            is_note_image_url("https://sns-webpic-qc.xhscdn.com/emoji/1.png")
+        )
+        self.assertFalse(
+            is_note_image_url("https://sns-webpic-qc.xhscdn.com/sticker/1.png")
+        )
+        self.assertTrue(
+            is_note_image_url("https://sns-webpic-qc.xhscdn.com/note-1")
+        )
+
+    def test_clean_note_title_strips_platform_signature(self):
+        self.assertEqual(
+            clean_note_title("拉粑粑痛？便秘/肛裂/痔疮 - 小红书"),
+            "拉粑粑痛？便秘/肛裂/痔疮",
+        )
+        self.assertEqual(
+            clean_note_title("久坐党日常护理的三个习惯"),
+            "久坐党日常护理的三个习惯",
+        )
 
     def test_image_page_loads_collected_reference_images(self):
         window = MainWindow()

@@ -162,6 +162,42 @@ def _normalize_tags(value: object) -> list[str]:
 RECOMMENDED_TAG_COUNT = 5
 IMAGE_ANALYSIS_MAX_IMAGES = 9
 
+SIGNATURE_LINE_PATTERN = re.compile(
+    r"^\s*(?:作者|撰文|撰稿|编辑|责编|审核|监制|出品|来源|转自|校对|"
+    r"策划|排版|图片来源|文字|图文)\s*[:：]"
+)
+SIGNATURE_MENTION_PATTERN = re.compile(r"^\s*(?:@|＠)\S{1,30}\s*$")
+SIGNATURE_ORG_PATTERN = re.compile(
+    r"^\s*(?:本文|本内容|本视频|本笔记)?\s*(?:由|经|来自)?\s*"
+    r"[^\s，。；;]{0,20}?(?:医院|医学院|医科大学|大学|研究院|研究所|"
+    r"科室|门诊|中心)\s*[^\s，。；;]{0,20}?"
+    r"(?:审核|指导|提供|供稿|出品|编辑|整理|发布|联合)"
+)
+SIGNATURE_RULE = (
+    "去掉署名类内容：人名、医生姓名、医院、科室、单位、机构、公司、"
+    "门店、微信号、电话、二维码，以及“作者”“审核”“来源”这类落款，"
+    "标题、正文和图片文字里都不能出现。需要提到专业来源时，"
+    "只用“医生说”“医生提醒”这类泛化说法。"
+)
+
+
+def strip_signature_lines(text: str) -> str:
+    """去掉采集正文里明显的署名行（作者、审核、来源、机构落款等）。"""
+    kept: list[str] = []
+    for line in str(text or "").splitlines():
+        value = line.strip()
+        if not value:
+            kept.append(line)
+            continue
+        if SIGNATURE_LINE_PATTERN.match(value):
+            continue
+        if SIGNATURE_MENTION_PATTERN.match(value):
+            continue
+        if SIGNATURE_ORG_PATTERN.match(value):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
 
 def build_image_analysis_prompt(index: int, total: int) -> str:
     return f"""请客观描述这张图片（第 {index} 张，共 {total} 张）。
@@ -300,6 +336,7 @@ def build_image_copy_prompt(
 5. 内容风格：{style}。
 6. 生图提示词必须以改写后的图片文案为主体，并保持原图的画面主体、构图布局和整体风格接近，只做轻微细节变化，不要过度改款。
 7. 生图提示词要写明画面中出现的简体中文大字和排版位置，不出现英文、拼音和水印。
+8. {SIGNATURE_RULE}
 
 爆款标题：{item.title}
 
@@ -518,13 +555,14 @@ def build_rewrite_prompt(
 1. {source_rule}
 2. 只参考爆款的选题、结构和表达节奏，不得复制原句。
 3. 不编造产品功效，不写治愈、根治、保证有效等承诺。
-4. 内容风格：{style}。
-5. 风格特点：{style_description}
-6. 风格参考样例（只模仿语气和结构，不得照抄）：
+4. {SIGNATURE_RULE}
+5. 内容风格：{style}。
+6. 风格特点：{style_description}
+7. 风格参考样例（只模仿语气和结构，不得照抄）：
 {style_example or "无"}
-7. 正文目标字数：约 {target_word_count} 个中文字符。
-8. 输出 4 到 6 个图文页面。
-9. 所有图片中的可见文字必须使用简体中文。
+8. 正文目标字数：约 {target_word_count} 个中文字符。
+9. 输出 4 到 6 个图文页面。
+10. 所有图片中的可见文字必须使用简体中文。
 
 口语化与去 AI 味要求（必须严格执行）：
 - 用真人第一人称口语写，像对着朋友讲自己的经历，不要写成说明书或百科条目。
@@ -535,7 +573,7 @@ def build_rewrite_prompt(
 
 爆款参考：
 标题：{item.title}
-正文：{item.body}
+正文：{strip_signature_lines(item.body)}
 标签：{" ".join(item.tags)}
 
 {image_section}{reference_block}
@@ -616,6 +654,7 @@ def generate_original_content(
         temperature=0.75,
     )
     original = normalize_original_content(_extract_json(response))
+    original.body = strip_signature_lines(original.body)
     if item.tags:
         original.tags = shuffle_tags(item.tags)
     return original

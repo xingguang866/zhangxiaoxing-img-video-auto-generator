@@ -23,6 +23,39 @@ NOTE_IMAGE_SELECTORS = (
     "article img",
 )
 NOTE_IMAGE_HOSTS = ("xhscdn.com", "xsecimg.com")
+NOTE_IMAGE_EXCLUDE_KEYWORDS = (
+    "avatar",
+    "emoji",
+    "sticker",
+    "icon",
+    "logo",
+)
+# 图标、贴纸、色块这类小图的边长通常远小于正常图文
+MIN_NOTE_IMAGE_SIDE = 240
+MAX_NOTE_IMAGE_RATIO = 4.0
+NOTE_TITLE_SUFFIX = re.compile(r"\s*[-|—_·]\s*小红书\s*$")
+
+
+def clean_note_title(value: str) -> str:
+    """去掉标题尾部的平台署名，例如“xxx - 小红书”。"""
+    return NOTE_TITLE_SUFFIX.sub("", str(value or "").strip()).strip()
+
+
+def is_useful_note_image(width: int, height: int) -> bool:
+    if min(width, height) < MIN_NOTE_IMAGE_SIDE:
+        return False
+    longest = max(width, height)
+    shortest = max(1, min(width, height))
+    return longest / shortest <= MAX_NOTE_IMAGE_RATIO
+
+
+def is_flat_placeholder(image: Image.Image) -> bool:
+    """只有底色加一个色块的图片（图标、占位图、纯色块）没有采集价值。"""
+    colors = image.convert("RGB").resize(
+        (64, 64),
+        Image.Resampling.NEAREST,
+    ).getcolors(maxcolors=4096)
+    return colors is not None and len(colors) <= 2
 
 
 def normalize_xhs_url(value: str) -> str:
@@ -83,7 +116,9 @@ def is_note_image_url(url: str) -> bool:
     lowered = url.lower()
     if not any(host in lowered for host in NOTE_IMAGE_HOSTS):
         return False
-    return "avatar" not in lowered and "emoji" not in lowered
+    return not any(
+        keyword in lowered for keyword in NOTE_IMAGE_EXCLUDE_KEYWORDS
+    )
 
 
 def _image_source(element) -> str:
@@ -109,7 +144,7 @@ def _note_image_urls(page: Page) -> list[str]:
 def download_note_images(context, urls: list[str], target_dir: str | Path) -> list[str]:
     directory = Path(target_dir)
     saved: list[str] = []
-    for index, url in enumerate(urls, start=1):
+    for url in urls:
         try:
             response = context.request.get(
                 url,
@@ -118,9 +153,13 @@ def download_note_images(context, urls: list[str], target_dir: str | Path) -> li
             )
             if not response.ok:
                 continue
-            directory.mkdir(parents=True, exist_ok=True)
-            destination = directory / f"原图{index:02d}.jpg"
             with Image.open(BytesIO(response.body())) as image:
+                if not is_useful_note_image(*image.size) or is_flat_placeholder(
+                    image
+                ):
+                    continue
+                directory.mkdir(parents=True, exist_ok=True)
+                destination = directory / f"原图{len(saved) + 1:02d}.jpg"
                 image.convert("RGB").save(
                     destination,
                     format="JPEG",
@@ -148,6 +187,7 @@ def _extract_detail(page: Page) -> HotContentItem:
                 title = locator.inner_text(timeout=2000).strip()
             if title:
                 break
+    title = clean_note_title(title)
 
     author = ""
     for selector in (
