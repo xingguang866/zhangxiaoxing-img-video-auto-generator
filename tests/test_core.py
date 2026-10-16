@@ -496,7 +496,10 @@ class CoreTests(unittest.TestCase):
             )
             window.open_publish_center([image_draft, video_draft])
             self.app.processEvents()
-            self.assertEqual(window.stack.currentIndex(), 5)
+            self.assertEqual(
+                window.stack.currentIndex(),
+                window.stack.indexOf(window.publish_page),
+            )
             self.assertEqual(window.publish_page.draft_combo.count(), 2)
             self.assertEqual(window.publish_page.media_list.count(), 1)
             self.assertEqual(window.publish_page.title_edit.text(), "视频发布草稿")
@@ -1465,6 +1468,21 @@ class CoreTests(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(window.stack.count(), 9)
         self.assertEqual(window.stack.currentIndex(), 0)
+        self.assertEqual(
+            [button.text() for button in window.nav_buttons],
+            [
+                "爆款重构",
+                "图文生成",
+                "视频生成",
+                "批量处理",
+                "发布中心",
+                "剪映草稿",
+                "Hypit视频",
+                "模型中心",
+                "配置",
+            ],
+        )
+        self.assertIs(window.stack.currentWidget(), window.hot_content_page)
         self.assertEqual(window.models_page.tabs.count(), 4)
         self.assertEqual(window.publish_page.tabs.count(), 5)
         self.assertEqual(

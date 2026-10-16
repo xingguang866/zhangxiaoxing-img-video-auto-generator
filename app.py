@@ -4896,8 +4896,7 @@ class HotContentPage(QtWidgets.QWidget):
             image_style=image_style,
             reference_images=item.images if item else [],
         )
-        self.main_window.stack.setCurrentIndex(0)
-        self.main_window.nav_buttons[0].setChecked(True)
+        self.main_window.show_page("image_page")
 
 
 class ModelsPage(QtWidgets.QWidget):
@@ -5026,13 +5025,11 @@ class ModelsPage(QtWidgets.QWidget):
         if category == "image":
             self.main_window.image_page.model_combo.setCurrentText(str(model_id))
             self.main_window.batch_page.image_model_combo.setCurrentText(str(model_id))
-            self.main_window.stack.setCurrentIndex(0)
-            self.main_window.nav_buttons[0].setChecked(True)
+            self.main_window.show_page("image_page")
         elif category == "video":
             self.main_window.video_page.model_combo.setCurrentText(str(model_id))
             self.main_window.batch_page.video_model_combo.setCurrentText(str(model_id))
-            self.main_window.stack.setCurrentIndex(1)
-            self.main_window.nav_buttons[1].setChecked(True)
+            self.main_window.show_page("video_page")
         else:
             QtWidgets.QMessageBox.information(
                 self,
@@ -5308,19 +5305,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.nav_group = QtWidgets.QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        nav_labels = [
-            "图文生成",
-            "视频生成",
-            "批量处理",
-            "剪映草稿",
-            "Hypit视频",
-            "发布中心",
-            "爆款重构",
-            "模型中心",
-            "配置",
+        # 页面顺序即“爆款采集 → 文案重构 → 图片复刻 → 图生视频 → 发布”的作业顺序
+        page_specs = [
+            ("hot_content_page", "爆款重构"),
+            ("image_page", "图文生成"),
+            ("video_page", "视频生成"),
+            ("batch_page", "批量处理"),
+            ("publish_page", "发布中心"),
+            ("jianying_page", "剪映草稿"),
+            ("hypit_page", "Hypit视频"),
+            ("models_page", "模型中心"),
+            ("settings_page", "配置"),
         ]
+        self.page_index = {
+            attr: index for index, (attr, _label) in enumerate(page_specs)
+        }
         self.nav_buttons: list[QtWidgets.QPushButton] = []
-        for index, label in enumerate(nav_labels):
+        for index, (_attr, label) in enumerate(page_specs):
             button = QtWidgets.QPushButton(label)
             button.setCheckable(True)
             button.setObjectName("navButton")
@@ -5348,18 +5349,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.models_page.refresh_requested.connect(self.refresh_models)
         self.models_page.pricing_refresh_requested.connect(self.refresh_pricing_usage)
         self.settings_page.saved.connect(self.on_settings_saved)
-        for page in (
-            self.image_page,
-            self.video_page,
-            self.batch_page,
-            self.jianying_page,
-            self.hypit_page,
-            self.publish_page,
-            self.hot_content_page,
-            self.models_page,
-            self.settings_page,
-        ):
-            self.stack.addWidget(page)
+        for attr, _label in page_specs:
+            self.stack.addWidget(getattr(self, attr))
         root.addWidget(self.stack, 1)
 
         self.setStyleSheet(APP_STYLE)
@@ -5372,8 +5363,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_publish_center(self, drafts: list[PublishDraft]) -> None:
         self.publish_page.add_drafts(drafts)
-        self.stack.setCurrentIndex(5)
-        self.nav_buttons[5].setChecked(True)
+        self.show_page("publish_page")
+
+    def show_page(self, attr: str) -> None:
+        index = self.page_index[attr]
+        self.stack.setCurrentIndex(index)
+        self.nav_buttons[index].setChecked(True)
 
     def set_model_catalog(self, catalog: dict[str, list[dict]], source: str) -> None:
         self.model_catalog = catalog
