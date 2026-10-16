@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1511,6 +1512,37 @@ class CoreTests(unittest.TestCase):
         )
         self.assertTrue(original.title)
 
+    def test_rewrite_prompt_without_reference_content(self):
+        item = HotContentItem(
+            source_mode="链接采集",
+            title="久坐党护理清单",
+            body="减少反复摩擦，保持清爽",
+            tags=["肛周护理"],
+        )
+        prompt = build_rewrite_prompt(
+            item,
+            reference_content="",
+            product_info="",
+            audience="",
+            style="小红书风格",
+            target_word_count=300,
+        )
+        self.assertIn("二次原创仿写", prompt)
+        self.assertNotIn("参考内容是最高优先级事实来源", prompt)
+        self.assertIn("不得复制原句", prompt)
+        original = generate_original_content(
+            item,
+            reference_content="",
+            product_info="",
+            audience="",
+            style="小红书风格",
+            target_word_count=300,
+            text_model="gpt-4o-mini",
+            settings={"mock_mode": True},
+        )
+        self.assertTrue(original.title)
+        self.assertGreaterEqual(len(original.pages), 4)
+
     def test_replicate_reference_instruction(self):
         text = build_reference_instruction("replicate", image_count=2)
         self.assertIn("复刻", text)
@@ -1668,6 +1700,41 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(page.image_analysis), 1)
         self.assertIn("久坐党护理", page.image_analysis_edit.toPlainText())
         self.assertIs(page.result_tabs.currentWidget(), page.original_page)
+        window.close()
+
+    def test_hot_rewrite_allows_empty_reference_pack(self):
+        window = MainWindow()
+        page = window.hot_content_page
+        page.items = [
+            HotContentItem(
+                source_mode="链接采集",
+                title="久坐党护理清单",
+                body="减少反复摩擦，保持清爽",
+                tags=["肛周护理"],
+            )
+        ]
+        page._refresh_table()
+        page.table.selectRow(0)
+        self.assertFalse(page.reference_edit.toPlainText())
+        self.assertIn("可不填", page.reference_edit.placeholderText())
+        warnings: list = []
+        with patch.object(
+            page.main_window.settings_store,
+            "as_dict",
+            return_value={"mock_mode": True},
+        ), patch(
+            "app.QtWidgets.QMessageBox.warning",
+            side_effect=lambda *args, **kwargs: warnings.append(args),
+        ):
+            page.start_rewrite()
+            deadline = time.time() + 30
+            while page.rewrite_thread is not None and time.time() < deadline:
+                self.app.processEvents()
+                time.sleep(0.02)
+        self.assertEqual(warnings, [])
+        self.assertIsNotNone(page.original)
+        self.assertTrue(page.original.title)
+        self.assertEqual(len(page.original.tags), 1)
         window.close()
 
     def test_hot_content_sends_to_video_generation(self):

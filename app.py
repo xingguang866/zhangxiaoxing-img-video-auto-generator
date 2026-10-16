@@ -4664,11 +4664,14 @@ class HotContentPage(QtWidgets.QWidget):
 
         side_layout.addWidget(section_label("创作参考包"))
         side_layout.addWidget(
-            hint_label("原创内容必须围绕这里的事实、产品或服务信息展开。")
+            hint_label(
+                "选填。不填写时直接对采集到的爆款内容做二次原创仿写；"
+                "填写后原创内容会围绕这里的事实、产品或服务信息展开。"
+            )
         )
         self.reference_edit = QtWidgets.QPlainTextEdit()
         self.reference_edit.setPlaceholderText(
-            "填写必须参考和表达的内容，例如：\n"
+            "可不填。填写后必须参考和表达的内容，例如：\n"
             "1、如厕后减少反复摩擦\n"
             "2、湿厕纸要保持清爽\n"
             "3、产品适合日常护理"
@@ -4977,9 +4980,6 @@ class HotContentPage(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "没有选择内容", "请先选择一条采集结果。")
             return
         reference_content = self.reference_edit.toPlainText().strip()
-        if not reference_content:
-            QtWidgets.QMessageBox.warning(self, "缺少参考内容", "请先填写创作参考包。")
-            return
         settings = self.main_window.settings_store.as_dict()
         params = {
             "item": item,
@@ -4993,7 +4993,7 @@ class HotContentPage(QtWidgets.QWidget):
         }
         self.rewrite_button.setEnabled(False)
         self.rewrite_button.setText("正在生成原创内容...")
-        self.rewrite_status.setText("正在围绕参考内容进行原创重构...")
+        self.rewrite_status.setText("正在对采集内容做二次原创...")
         self.rewrite_thread = HotRewriteThread(params, self)
         self.rewrite_thread.result.connect(self._on_rewrite_result)
         self.rewrite_thread.error.connect(self._on_rewrite_error)

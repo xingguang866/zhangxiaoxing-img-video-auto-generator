@@ -322,11 +322,23 @@ def build_rewrite_prompt(
         )
     else:
         image_section = ""
+    reference_text = reference_content.strip()
+    if reference_text:
+        source_rule = "参考内容是最高优先级事实来源。"
+        reference_block = f"用户参考内容：\n{reference_text}"
+    else:
+        source_rule = (
+            "用户参考内容未填写，请直接以采集到的爆款内容为素材，"
+            "换角度、换说法做二次原创仿写。"
+        )
+        reference_block = (
+            "用户参考内容：未填写（本次直接对采集到的爆款内容做二次原创仿写）"
+        )
     return f"""
 请根据“参考爆款结构”和“用户提供的参考内容”，生成全新的原创图文内容。
 
 必须遵守：
-1. 参考内容是最高优先级事实来源。
+1. {source_rule}
 2. 只参考爆款的选题、结构和表达节奏，不得复制原句。
 3. 不编造产品功效，不写治愈、根治、保证有效等承诺。
 4. 内容风格：{style}。
@@ -349,8 +361,7 @@ def build_rewrite_prompt(
 正文：{item.body}
 标签：{" ".join(item.tags)}
 
-{image_section}用户参考内容：
-{reference_content}
+{image_section}{reference_block}
 
 产品或服务：
 {product_info or "未填写"}
@@ -390,8 +401,6 @@ def generate_original_content(
     image_analysis: list[str] | None = None,
     client: APIMartClient | None = None,
 ) -> OriginalContent:
-    if not reference_content.strip():
-        raise ValueError("请先填写参考内容。")
     if settings.get("mock_mode"):
         original = mock_original_content(
             item,
@@ -450,7 +459,15 @@ def mock_original_content(
         if line.strip(" -0123456789、.．")
     ]
     if not facts:
-        facts = ["围绕参考内容进行日常护理", "减少反复摩擦", "保持生活规律"]
+        facts = [
+            line.strip(" -0123456789、.．")
+            for line in (item.body or "").splitlines()
+            if line.strip(" -0123456789、.．")
+        ]
+    if not facts and item.title.strip():
+        facts = [item.title.strip()]
+    if not facts:
+        facts = ["围绕采集到的爆款内容做日常护理分享", "减少反复摩擦", "保持生活规律"]
     title_base = facts[0][:18]
     title = f"{title_base}，这几点值得注意"
     cover_title = title_base[:14]
