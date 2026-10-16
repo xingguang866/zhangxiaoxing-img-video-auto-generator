@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from datetime import datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -377,6 +378,84 @@ class CoreTests(unittest.TestCase):
             client.chat_completion(model="gpt-5", prompt="test"),
             "direct-ok",
         )
+
+    def test_multimodal_response_sends_vision_message(self):
+        client = APIMartClient(
+            APIConfig(base_url="https://api.apib.ai/v1", api_key="test-key")
+        )
+        captured = {}
+
+        def wrapped_request(method, path, **kwargs):
+            captured.update({"method": method, "path": path, "kwargs": kwargs})
+            return {"choices": [{"message": {"content": "画面主体：桌面上的湿厕纸。"}}]}
+
+        client._request = wrapped_request
+        text = client.multimodal_response(
+            model="gpt-4o-mini",
+            prompt="识别图片",
+            image_data_uris=["data:image/jpeg;base64,AAAA"],
+        )
+        self.assertEqual(text, "画面主体：桌面上的湿厕纸。")
+        self.assertEqual(captured["path"], "/chat/completions")
+        content = captured["kwargs"]["json_body"]["messages"][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "识别图片"})
+        self.assertEqual(
+            content[1],
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,AAAA"},
+            },
+        )
+
+        client._request = lambda method, path, **kwargs: {
+            "id": "resp_test",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "responses-ok"}
+                    ],
+                }
+            ],
+        }
+        self.assertEqual(
+            client.multimodal_response(
+                model="gpt-4o-mini",
+                prompt="识别图片",
+                image_data_uris=["data:image/jpeg;base64,AAAA"],
+            ),
+            "responses-ok",
+        )
+
+        attempts: list[str] = []
+
+        def failing_chat(method, path, **kwargs):
+            attempts.append(path)
+            if path == "/chat/completions":
+                raise APIClientError("HTTP 404")
+            return {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "fallback-ok"}],
+                    }
+                ]
+            }
+
+        client._request = failing_chat
+        self.assertEqual(
+            client.multimodal_response(
+                model="gpt-4o-mini",
+                prompt="识别图片",
+                image_data_uris=["data:image/jpeg;base64,AAAA"],
+            ),
+            "fallback-ok",
+        )
+        self.assertEqual(attempts, ["/chat/completions", "/responses"])
 
     def test_speech_payload_supports_apib_tts_routes(self):
         client = APIMartClient(
@@ -1459,10 +1538,13 @@ class CoreTests(unittest.TestCase):
 
     def test_image_analysis_prompt_keeps_original_layout(self):
         prompt = build_image_analysis_prompt(2, 5)
-        self.assertIn("第 2 张图（共 5 张）", prompt)
-        self.assertIn("二次原创方案", prompt)
+        self.assertIn("第 2 张，共 5 张", prompt)
+        self.assertIn("画面主体", prompt)
         self.assertIn("构图", prompt)
-        self.assertIn("不要过度改款", prompt)
+        self.assertIn("图中文字", prompt)
+        # 识别提示词必须保持中性，出现"二次原创/复刻"会被模型当成仿图请求而拒答
+        self.assertNotIn("二次原创", prompt)
+        self.assertNotIn("保持原图", prompt)
 
     def test_analyze_reference_images_uses_mock_and_data_uri(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1478,7 +1560,62 @@ class CoreTests(unittest.TestCase):
             )
         self.assertEqual(len(analysis), 1)
         self.assertIn("久坐党护理", analysis[0])
-        self.assertIn("不过度改款", analysis[0])
+        self.assertIn("二次原创方案", analysis[0])
+        self.assertIn("不要过度改款", analysis[0])
+
+    def test_analyze_reference_images_calls_vision_client(self):
+        class StubClient:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def multimodal_response(self, **kwargs) -> str:
+                self.calls.append(kwargs)
+                return "画面主体：桌面上的湿厕纸。\n二次原创方案：保持构图，只改文字。"
+
+        stub = StubClient()
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "原图01.jpg"
+            with Image.new("RGB", (16, 16), "white") as image:
+                image.save(path, format="JPEG")
+            analysis = analyze_reference_images(
+                [str(path)],
+                model="gpt-4o-mini",
+                settings={"mock_mode": False},
+                theme="久坐党护理",
+                client=stub,
+            )
+        self.assertEqual(
+            analysis,
+            [
+                "画面主体：桌面上的湿厕纸。\n二次原创方案：保持构图，只改文字。"
+                "\n二次原创方案：按上面的识别结果重绘这张图，保持原图的画面主体、"
+                "构图布局和整体风格，只做轻微细节变化，不要过度改款。"
+            ],
+        )
+        self.assertEqual(len(stub.calls), 1)
+        self.assertTrue(
+            stub.calls[0]["image_data_uris"][0].startswith("data:image/jpeg;base64,")
+        )
+
+    def test_analyze_reference_images_flags_model_refusal(self):
+        class RefusingClient:
+            def multimodal_response(self, **kwargs) -> str:
+                return "抱歉，我无法识别或描述这张图片的内容。"
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "原图01.jpg"
+            with Image.new("RGB", (16, 16), "white") as image:
+                image.save(path, format="JPEG")
+            analysis = analyze_reference_images(
+                [str(path)],
+                model="gpt-4o-mini",
+                settings={"mock_mode": False},
+                client=RefusingClient(),
+            )
+        self.assertEqual(len(analysis), 1)
+        self.assertIn("未能识别", analysis[0])
+        self.assertIn("支持读取图片的模型", analysis[0])
+        self.assertNotIn("抱歉", analysis[0])
 
     def test_rewrite_prompt_includes_image_analysis(self):
         item = HotContentItem(
@@ -1573,15 +1710,22 @@ class CoreTests(unittest.TestCase):
             browser.close()
 
     def test_download_note_images_saves_files(self):
+        buffer = BytesIO()
+        with Image.new("RGB", (24, 24), "white") as image:
+            image.save(buffer, format="PNG")
+        payload = buffer.getvalue()
+
         class FakeResponse:
             ok = True
-            headers = {"content-type": "image/webp"}
+            headers = {"content-type": "image/png"}
 
             def body(self) -> bytes:
-                return b"fake-image-bytes"
+                return payload
 
         class FakeRequest:
             def get(self, url: str, **kwargs):
+                if url.endswith("bad"):
+                    raise RuntimeError("下载失败")
                 return FakeResponse()
 
         class FakeContext:
@@ -1590,15 +1734,16 @@ class CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             saved = download_note_images(
                 FakeContext(),
-                ["https://sns-webpic-qc.xhscdn.com/note-1"],
+                [
+                    "https://sns-webpic-qc.xhscdn.com/note-1",
+                    "https://sns-webpic-qc.xhscdn.com/bad",
+                ],
                 Path(temp),
             )
             self.assertEqual(len(saved), 1)
-            self.assertTrue(saved[0].endswith(".webp"))
-            self.assertEqual(
-                Path(saved[0]).read_bytes(),
-                b"fake-image-bytes",
-            )
+            self.assertTrue(saved[0].endswith(".jpg"))
+            with Image.open(saved[0]) as image:
+                self.assertEqual(image.format, "JPEG")
 
     def test_image_page_loads_collected_reference_images(self):
         window = MainWindow()

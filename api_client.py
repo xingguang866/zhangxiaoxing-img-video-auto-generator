@@ -15,6 +15,34 @@ class APIClientError(RuntimeError):
     pass
 
 
+def responses_output_text(payload: dict) -> str:
+    """从 Responses 接口格式（output 数组）中取出文本。"""
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    output = payload.get("output")
+    if not isinstance(output, list):
+        return ""
+    texts: list[str] = []
+    for entry in output:
+        if not isinstance(entry, dict):
+            continue
+        content = entry.get("content")
+        if isinstance(content, str):
+            if content.strip():
+                texts.append(content.strip())
+            continue
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            value = part.get("text")
+            if isinstance(value, str) and value.strip():
+                texts.append(value.strip())
+    return "\n".join(texts).strip()
+
+
 @dataclass(slots=True)
 class APIConfig:
     base_url: str = "https://api.apib.ai/v1"
@@ -245,29 +273,64 @@ class APIMartClient:
         max_tokens: int = 4000,
         temperature: float = 0.2,
     ) -> str:
-        content: list[dict] = [{"type": "input_text", "text": prompt}]
-        content.extend(
-            {"type": "input_image", "image_url": image_uri}
-            for image_uri in image_data_uris
-        )
-        response = self._request(
-            "POST",
-            "/responses",
-            json_body={
-                "model": model,
-                "stream": False,
-                "input": [{"role": "user", "content": content}],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            },
-            timeout=max(self.config.timeout, 600),
-            max_retries=1,
-        )
+        try:
+            response = self._request(
+                "POST",
+                "/chat/completions",
+                json_body={
+                    "model": model,
+                    "stream": False,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                *(
+                                    {"type": "image_url", "image_url": {"url": uri}}
+                                    for uri in image_data_uris
+                                ),
+                            ],
+                        }
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+                timeout=max(self.config.timeout, 600),
+                max_retries=1,
+            )
+        except APIClientError:
+            response = self._request(
+                "POST",
+                "/responses",
+                json_body={
+                    "model": model,
+                    "stream": False,
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": prompt},
+                                *(
+                                    {"type": "input_image", "image_url": uri}
+                                    for uri in image_data_uris
+                                ),
+                            ],
+                        }
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+                timeout=max(self.config.timeout, 600),
+                max_retries=1,
+            )
         payload = response.get("data", response)
         if not isinstance(payload, dict):
             raise APIClientError(f"多模态分析返回格式异常：{response}")
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
+            output_text = responses_output_text(payload)
+            if output_text:
+                return output_text
             raise APIClientError(f"多模态分析未返回结果：{payload}")
         first = choices[0]
         if not isinstance(first, dict):

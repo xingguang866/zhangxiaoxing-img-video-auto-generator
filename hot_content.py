@@ -163,22 +163,40 @@ IMAGE_ANALYSIS_MAX_IMAGES = 9
 
 
 def build_image_analysis_prompt(index: int, total: int) -> str:
-    return f"""请识别这张小红书爆款图文的第 {index} 张图（共 {total} 张），并给出二次原创方案。
+    return f"""请客观描述这张图片（第 {index} 张，共 {total} 张）。
 
-第一步，客观识别画面内容：
 1. 画面主体：有没有人物、产品或场景，人物在做什么。
 2. 构图与配色：主体位置、镜头视角、光线、主色调和背景元素。
-3. 图中文字：画面里出现的中文标题、正文和标签，逐条列出。
-
-第二步，给出二次原创方案（不要过度改款）：
-保持原图的画面主体、构图布局、配色关系和整体风格尽量接近，只允许轻微细节变化，
-例如替换背景里的小物件、微调光线和色彩明暗、改写画面文字，不要更换主体，不要改变场景类型。
+3. 图中文字：把画面里出现的中文标题、正文和标签逐条写出来。
 
 只输出简体中文纯文本，不超过 5 行，格式固定：
 画面主体：……
 构图与配色：……
-图中文字：……
-二次原创方案：……""".strip()
+图中文字：……""".strip()
+
+
+IMAGE_REPLICATION_NOTE = (
+    "二次原创方案：按上面的识别结果重绘这张图，保持原图的画面主体、"
+    "构图布局和整体风格，只做轻微细节变化，不要过度改款。"
+)
+
+
+def _is_image_refusal(text: str) -> bool:
+    if "画面主体" in text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "无法识别",
+            "无法描述",
+            "无法分析",
+            "无法帮助",
+            "无法处理",
+            "无法看到",
+            "无法查看",
+            "抱歉",
+        )
+    )
 
 
 def mock_image_analysis(
@@ -192,9 +210,7 @@ def mock_image_analysis(
         f"画面主体：第 {index}/{total} 张图围绕“{subject}”，主体居中，"
         "配有中文标题和说明文字。\n"
         "构图与配色：竖版 3:4，浅色背景，配色清爽，文字集中在画面上方。\n"
-        "图中文字：标题大字和两行说明文字，均为简体中文。\n"
-        "二次原创方案：保持相同的画面主体、构图布局和整体风格，"
-        "只微调背景小物件、光线明暗和文字表达，不更换主体，不过度改款。"
+        "图中文字：标题大字和两行说明文字，均为简体中文。"
     )
 
 
@@ -213,7 +229,7 @@ def analyze_reference_images(
     total = len(paths)
     if settings.get("mock_mode"):
         return [
-            mock_image_analysis(index, total, theme=theme)
+            f"{mock_image_analysis(index, total, theme=theme)}\n{IMAGE_REPLICATION_NOTE}"
             for index in range(1, total + 1)
         ]
     actual_client = client or APIMartClient(
@@ -229,15 +245,20 @@ def analyze_reference_images(
         except OSError as exc:
             results.append(f"第 {index} 张原图读取失败：{exc}")
             continue
-        results.append(
-            actual_client.multimodal_response(
-                model=model or "gpt-4o-mini",
-                prompt=build_image_analysis_prompt(index, total),
-                image_data_uris=[image_uri],
-                max_tokens=1500,
-                temperature=0.3,
-            )
+        description = actual_client.multimodal_response(
+            model=model or "gpt-4o-mini",
+            prompt=build_image_analysis_prompt(index, total),
+            image_data_uris=[image_uri],
+            max_tokens=1500,
+            temperature=0.3,
         )
+        if _is_image_refusal(description):
+            results.append(
+                f"第 {index} 张原图未能识别：模型没有返回画面描述。"
+                "请换用支持读取图片的模型后重新生成。"
+            )
+            continue
+        results.append(f"{description}\n{IMAGE_REPLICATION_NOTE}")
     return results
 
 

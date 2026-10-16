@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import re
 import time
+from io import BytesIO
 from pathlib import Path
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, urljoin
 
+from PIL import Image
 from playwright.sync_api import Page, sync_playwright
 
 from browser_assistant import browser_executable, browser_profile_dir
@@ -21,12 +23,6 @@ NOTE_IMAGE_SELECTORS = (
     "article img",
 )
 NOTE_IMAGE_HOSTS = ("xhscdn.com", "xsecimg.com")
-NOTE_IMAGE_SUFFIXES = {
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/jpeg": ".jpg",
-    "image/jpg": ".jpg",
-}
 
 
 def normalize_xhs_url(value: str) -> str:
@@ -122,17 +118,15 @@ def download_note_images(context, urls: list[str], target_dir: str | Path) -> li
             )
             if not response.ok:
                 continue
-            content_type = str(
-                response.headers.get("content-type", "")
-            ).split(";")[0].strip().lower()
-            suffix = (
-                NOTE_IMAGE_SUFFIXES.get(content_type)
-                or Path(urlparse(url).path).suffix.lower()
-                or ".jpg"
-            )
             directory.mkdir(parents=True, exist_ok=True)
-            destination = directory / f"原图{index:02d}{suffix}"
-            destination.write_bytes(response.body())
+            destination = directory / f"原图{index:02d}.jpg"
+            with Image.open(BytesIO(response.body())) as image:
+                image.convert("RGB").save(
+                    destination,
+                    format="JPEG",
+                    quality=92,
+                    optimize=True,
+                )
             saved.append(str(destination))
         except Exception:
             continue
