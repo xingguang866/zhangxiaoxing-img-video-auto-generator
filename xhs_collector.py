@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 import time
-from urllib.parse import quote, urljoin
+from pathlib import Path
+from urllib.parse import quote, urljoin, urlparse
 
 from playwright.sync_api import Page, sync_playwright
 
@@ -12,6 +13,20 @@ from hot_content import HotContentItem
 
 XHS_HOME_URL = "https://www.xiaohongshu.com/"
 XHS_SEARCH_URL = "https://www.xiaohongshu.com/search_result?keyword={keyword}"
+NOTE_IMAGE_SELECTORS = (
+    '[class*="swiper-slide"] img',
+    '[class*="note-slider"] img',
+    '[class*="slider"] img',
+    "#noteContainer img",
+    "article img",
+)
+NOTE_IMAGE_HOSTS = ("xhscdn.com", "xsecimg.com")
+NOTE_IMAGE_SUFFIXES = {
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+}
 
 
 def normalize_xhs_url(value: str) -> str:
@@ -64,6 +79,64 @@ def _wait_for_login(
             page.wait_for_timeout(1500)
             return
     raise RuntimeError("等待小红书扫码登录超时，请重试采集。")
+
+
+def is_note_image_url(url: str) -> bool:
+    if not url.startswith("http"):
+        return False
+    lowered = url.lower()
+    if not any(host in lowered for host in NOTE_IMAGE_HOSTS):
+        return False
+    return "avatar" not in lowered and "emoji" not in lowered
+
+
+def _image_source(element) -> str:
+    for attribute in ("src", "data-src"):
+        value = str(element.get_attribute(attribute) or "").strip()
+        if is_note_image_url(value):
+            return value
+    value = str(element.evaluate("(node) => node.currentSrc || ''") or "").strip()
+    return value if is_note_image_url(value) else ""
+
+
+def _note_image_urls(page: Page) -> list[str]:
+    urls: list[str] = []
+    for selector in NOTE_IMAGE_SELECTORS:
+        locator = page.locator(selector)
+        for index in range(locator.count()):
+            source = _image_source(locator.nth(index))
+            if source and source not in urls:
+                urls.append(source)
+    return urls
+
+
+def download_note_images(context, urls: list[str], target_dir: str | Path) -> list[str]:
+    directory = Path(target_dir)
+    saved: list[str] = []
+    for index, url in enumerate(urls, start=1):
+        try:
+            response = context.request.get(
+                url,
+                headers={"Referer": XHS_HOME_URL},
+                timeout=30000,
+            )
+            if not response.ok:
+                continue
+            content_type = str(
+                response.headers.get("content-type", "")
+            ).split(";")[0].strip().lower()
+            suffix = (
+                NOTE_IMAGE_SUFFIXES.get(content_type)
+                or Path(urlparse(url).path).suffix.lower()
+                or ".jpg"
+            )
+            directory.mkdir(parents=True, exist_ok=True)
+            destination = directory / f"原图{index:02d}{suffix}"
+            destination.write_bytes(response.body())
+            saved.append(str(destination))
+        except Exception:
+            continue
+    return saved
 
 
 def _extract_detail(page: Page) -> HotContentItem:
@@ -139,6 +212,7 @@ def _extract_detail(page: Page) -> HotContentItem:
         content_type="视频" if page.locator("video").count() else "图文",
         tags=tags,
         metrics=metrics,
+        image_urls=_note_image_urls(page),
     )
 
 
@@ -146,6 +220,7 @@ def collect_xhs_link(
     link: str,
     *,
     browser_name: str = "edge",
+    image_dir: str | Path | None = None,
 ) -> HotContentItem:
     target_url = normalize_xhs_url(link)
     with sync_playwright() as playwright:
@@ -155,7 +230,14 @@ def collect_xhs_link(
             page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(4500)
             _wait_for_login(page)
-            return _extract_detail(page)
+            item = _extract_detail(page)
+            if image_dir and item.image_urls:
+                item.images = download_note_images(
+                    context,
+                    item.image_urls,
+                    Path(image_dir) / item.item_id,
+                )
+            return item
         finally:
             context.close()
 

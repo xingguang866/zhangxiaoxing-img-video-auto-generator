@@ -56,6 +56,10 @@ def build_reference_instruction(
         "product": "参考图中产品的外观、颜色、结构、材质和包装细节，不要照抄原图背景。",
         "person": "参考图中人物的外貌特征、服装、姿态和气质，不要照搬原图场景。",
         "background": "参考图中背景的空间结构、光线、配色和氛围，人物和产品按当前主题重新生成。",
+        "replicate": (
+            "以参考图为准做二次复刻：保持原图的构图、主体位置、配色、光影和排版布局尽量接近，"
+            "只做轻微细节重绘，不要改变画面主体、整体风格和氛围，避免过度改款。"
+        ),
     }
     if mode in instructions:
         return instructions[mode]

@@ -72,8 +72,11 @@ from hypit_tutorial import ASSET_DIR, build_tutorial_html
 from hot_content import (
     HotContentItem,
     OriginalContent,
+    build_rewrite_prompt,
     export_original_content_excel,
+    generate_original_content,
     mock_original_content,
+    shuffle_tags,
 )
 from image_reference import (
     build_reference_instruction,
@@ -101,6 +104,7 @@ from xhs_collector import (
     _extract_detail,
     _extract_visible_cards,
     _login_required,
+    download_note_images,
     normalize_xhs_url,
 )
 
@@ -171,7 +175,7 @@ class CoreTests(unittest.TestCase):
                 page.reference_mode_combo.itemData(index)
                 for index in range(page.reference_mode_combo.count())
             ],
-            ["none", "product", "person", "background", "custom"],
+            ["none", "product", "person", "background", "replicate", "custom"],
         )
         page.model_combo.setCurrentText("z-image-turbo")
         self.assertFalse(page.add_reference_button.isEnabled())
@@ -1295,6 +1299,133 @@ class CoreTests(unittest.TestCase):
             self.assertGreaterEqual(len(cards), 1)
             self.assertEqual(cards[0].title, "久坐党护理清单")
             browser.close()
+
+    def test_collected_tags_are_reordered_and_limited(self):
+        tags = ["肛周护理", "久坐党", "湿厕纸", "健康生活", "日常养护", "清洁"]
+        original = generate_original_content(
+            HotContentItem(source_mode="链接采集", tags=tags),
+            reference_content="1、如厕后减少反复摩擦",
+            product_info="",
+            audience="",
+            style="小红书风格",
+            target_word_count=200,
+            text_model="gpt-4o-mini",
+            settings={"mock_mode": True},
+        )
+        self.assertEqual(len(original.tags), 5)
+        self.assertTrue(set(original.tags).issubset(set(tags)))
+        self.assertEqual(len(shuffle_tags(tags)), 5)
+        self.assertEqual(shuffle_tags([]), [])
+        orderings = {tuple(shuffle_tags(tags)) for _ in range(30)}
+        self.assertGreater(len(orderings), 1)
+
+    def test_rewrite_prompt_requires_colloquial_copy(self):
+        prompt = build_rewrite_prompt(
+            HotContentItem(
+                source_mode="链接采集",
+                title="标题",
+                body="正文",
+                tags=["肛周护理"],
+            ),
+            reference_content="参考内容",
+            product_info="",
+            audience="",
+            style="小红书风格",
+            target_word_count=300,
+        )
+        self.assertIn("去 AI 味", prompt)
+        self.assertIn("口语", prompt)
+        self.assertIn("像真人在说话", prompt)
+
+    def test_replicate_reference_instruction(self):
+        text = build_reference_instruction("replicate", image_count=2)
+        self.assertIn("复刻", text)
+        self.assertIn("尽量接近", text)
+        self.assertEqual(
+            build_reference_instruction("replicate", image_count=0),
+            "",
+        )
+
+    def test_xhs_detail_extracts_note_images(self):
+        fixture = self.root / "tests" / "fixtures" / "xhs_collect_images.html"
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                channel="msedge",
+                headless=True,
+            )
+            page = browser.new_page()
+            page.goto(fixture.as_uri(), wait_until="domcontentloaded")
+            detail = _extract_detail(page)
+            self.assertEqual(
+                detail.image_urls,
+                [
+                    "https://sns-webpic-qc.xhscdn.com/note-1.jpg",
+                    "https://sns-webpic-qc.xhscdn.com/note-2.webp",
+                ],
+            )
+            self.assertIn("肛周护理", detail.tags)
+            browser.close()
+
+    def test_download_note_images_saves_files(self):
+        class FakeResponse:
+            ok = True
+            headers = {"content-type": "image/webp"}
+
+            def body(self) -> bytes:
+                return b"fake-image-bytes"
+
+        class FakeRequest:
+            def get(self, url: str, **kwargs):
+                return FakeResponse()
+
+        class FakeContext:
+            request = FakeRequest()
+
+        with tempfile.TemporaryDirectory() as temp:
+            saved = download_note_images(
+                FakeContext(),
+                ["https://sns-webpic-qc.xhscdn.com/note-1"],
+                Path(temp),
+            )
+            self.assertEqual(len(saved), 1)
+            self.assertTrue(saved[0].endswith(".webp"))
+            self.assertEqual(
+                Path(saved[0]).read_bytes(),
+                b"fake-image-bytes",
+            )
+
+    def test_image_page_loads_collected_reference_images(self):
+        window = MainWindow()
+        page = window.image_page
+        with tempfile.TemporaryDirectory() as temp:
+            image_path = Path(temp) / "原图01.jpg"
+            image_path.write_bytes(b"fake-image")
+            original = OriginalContent(
+                title="标题",
+                body="正文",
+                tags=["肛周护理"],
+                cover_title="封面",
+                pages=[
+                    {
+                        "heading": "标题",
+                        "copy": "文案",
+                        "image_prompt": "提示词",
+                    }
+                ],
+            )
+            page.load_generation_package(
+                original,
+                image_prompts=["提示词"],
+                image_style="手绘卡通",
+                reference_images=[str(image_path)],
+            )
+            self.assertEqual(page.reference_list.count(), 1)
+            self.assertEqual(
+                page.reference_mode_combo.currentData(),
+                "replicate",
+            )
+            self.assertIn("复刻", page.reference_prompt_instruction())
+        window.close()
 
     def test_hot_content_clear_button(self):
         window = MainWindow()

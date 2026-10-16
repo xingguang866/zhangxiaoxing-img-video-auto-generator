@@ -1125,6 +1125,7 @@ class ImagePage(BaseGenerationPage):
         self.reference_mode_combo.addItem("图中产品", "product")
         self.reference_mode_combo.addItem("图中人物", "person")
         self.reference_mode_combo.addItem("图中背景", "background")
+        self.reference_mode_combo.addItem("爆款原图复刻", "replicate")
         self.reference_mode_combo.addItem("自定义：图1、图2...", "custom")
         self.reference_mode_combo.currentIndexChanged.connect(
             self._on_reference_mode_changed
@@ -1297,6 +1298,7 @@ class ImagePage(BaseGenerationPage):
         *,
         image_prompts: list[str],
         image_style: str,
+        reference_images: list[str] | None = None,
     ) -> None:
         self.generation_mode_combo.setCurrentIndex(
             self.generation_mode_combo.findData("imported")
@@ -1326,10 +1328,28 @@ class ImagePage(BaseGenerationPage):
             "",
             image_style,
         )
+        self.load_collected_reference_images(reference_images or [])
         self.preview_tabs.setCurrentIndex(1)
         self.status_label.setText(
             "已导入爆款重构内容，生成时将使用页面任务中的生图提示词。"
         )
+
+    def load_collected_reference_images(self, paths: list[str]) -> None:
+        self.clear_reference_images()
+        if not paths:
+            return
+        limit = max_reference_images_for_model(self.model_combo.currentText().strip())
+        for path in paths:
+            if limit <= 0 or self.reference_list.count() >= limit:
+                break
+            if validate_reference_image(path):
+                continue
+            self.reference_list.addItem(str(Path(path).resolve()))
+        self._update_reference_count()
+        if self.reference_list.count():
+            index = self.reference_mode_combo.findData("replicate")
+            if index >= 0:
+                self.reference_mode_combo.setCurrentIndex(index)
 
     def _build_imported_image_items(self) -> list[dict]:
         theme = self.theme_edit.text().strip()
@@ -4289,6 +4309,7 @@ class HotCollectThread(QtCore.QThread):
         *,
         limit: int,
         browser_name: str,
+        image_dir: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -4296,13 +4317,23 @@ class HotCollectThread(QtCore.QThread):
         self.value = value
         self.limit = limit
         self.browser_name = browser_name
+        self.image_dir = image_dir
 
     def run(self) -> None:
         try:
             if self.mode == "link":
+                item = collect_xhs_link(
+                    self.value,
+                    browser_name=self.browser_name,
+                    image_dir=self.image_dir or None,
+                )
                 self.result.emit(
-                    [collect_xhs_link(self.value, browser_name=self.browser_name)],
-                    "链接内容采集完成。",
+                    [item],
+                    (
+                        f"链接内容采集完成，已保存 {len(item.images)} 张原图。"
+                        if item.images
+                        else "链接内容采集完成，未读取到可下载的原图。"
+                    ),
                 )
             else:
                 self.result.emit(
@@ -4619,11 +4650,13 @@ class HotContentPage(QtWidgets.QWidget):
             return
         self._set_collect_running(True)
         self.collect_status.setText("正在打开小红书官方页面...")
+        settings = self.main_window.settings_store.as_dict()
         self.collect_thread = HotCollectThread(
             mode,
             value,
             limit=self.result_limit_spin.value(),
             browser_name=str(self.browser_combo.currentData() or "edge"),
+            image_dir=str(Path(settings["output_dir"]) / "爆款采集"),
             parent=self,
         )
         self.collect_thread.result.connect(self._on_collection_result)
@@ -4851,6 +4884,7 @@ class HotContentPage(QtWidgets.QWidget):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "没有原创内容", str(exc))
             return
+        item = self.selected_item()
         image_style = self.image_style_combo.currentText()
         prompts = original.image_prompts(
             theme=original.title,
@@ -4860,6 +4894,7 @@ class HotContentPage(QtWidgets.QWidget):
             original,
             image_prompts=prompts,
             image_style=image_style,
+            reference_images=item.images if item else [],
         )
         self.main_window.stack.setCurrentIndex(0)
         self.main_window.nav_buttons[0].setChecked(True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -60,6 +61,8 @@ class HotContentItem:
     tags: list[str] = field(default_factory=list)
     metrics: str = ""
     cover_url: str = ""
+    image_urls: list[str] = field(default_factory=list)
+    images: list[str] = field(default_factory=list)
     status: str = "已采集"
     item_id: str = field(default_factory=_new_item_id)
 
@@ -154,6 +157,20 @@ def _normalize_tags(value: object) -> list[str]:
     return result[:10]
 
 
+RECOMMENDED_TAG_COUNT = 5
+
+
+def shuffle_tags(
+    tags: list[str],
+    *,
+    limit: int = RECOMMENDED_TAG_COUNT,
+) -> list[str]:
+    values = _normalize_tags(tags)
+    if not values:
+        return []
+    return random.sample(values, min(limit, len(values)))
+
+
 def normalize_original_content(payload: dict) -> OriginalContent:
     pages: list[dict] = []
     raw_pages = payload.get("pages")
@@ -220,6 +237,13 @@ def build_rewrite_prompt(
 8. 输出 4 到 6 个图文页面。
 9. 所有图片中的可见文字必须使用简体中文。
 
+口语化与去 AI 味要求（必须严格执行）：
+- 用真人第一人称口语写，像对着朋友讲自己的经历，不要写成说明书或百科条目。
+- 禁止机械连接词：首先、其次、再次、最后、总而言之、综上所述、值得注意的是。
+- 禁止排比堆砌和空洞形容词，句子长短要错落，允许自然断句和口语停顿。
+- 不使用 emoji 堆砌，不使用“姐妹们冲”“绝绝子”这类网感模板腔。
+- 读起来必须像真人在说话，可以直接当口播稿念出来。
+
 爆款参考：
 标题：{item.title}
 正文：{item.body}
@@ -268,7 +292,7 @@ def generate_original_content(
     if not reference_content.strip():
         raise ValueError("请先填写参考内容。")
     if settings.get("mock_mode"):
-        return mock_original_content(
+        original = mock_original_content(
             item,
             reference_content=reference_content,
             product_info=product_info,
@@ -276,6 +300,9 @@ def generate_original_content(
             style=style,
             target_word_count=target_word_count,
         )
+        if item.tags:
+            original.tags = shuffle_tags(item.tags)
+        return original
     actual_client = client or APIMartClient(
         APIConfig(
             base_url=str(settings.get("base_url", "https://api.apib.ai/v1")),
@@ -300,7 +327,10 @@ def generate_original_content(
         max_tokens=5000,
         temperature=0.75,
     )
-    return normalize_original_content(_extract_json(response))
+    original = normalize_original_content(_extract_json(response))
+    if item.tags:
+        original.tags = shuffle_tags(item.tags)
+    return original
 
 
 def mock_original_content(
