@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote, urljoin
 
-from PIL import Image
+from PIL import Image, ImageFilter
 from playwright.sync_api import Page, sync_playwright
 
 from browser_assistant import browser_executable, browser_profile_dir
@@ -33,6 +33,10 @@ NOTE_IMAGE_EXCLUDE_KEYWORDS = (
 # 图标、贴纸、色块这类小图的边长通常远小于正常图文
 MIN_NOTE_IMAGE_SIDE = 240
 MAX_NOTE_IMAGE_RATIO = 4.0
+# 大色块、模糊光斑一类的图几乎没有笔画和纹理，边缘占比会明显偏低
+LOW_INFORMATION_EDGE_RATIO = 0.03
+EDGE_SAMPLE_SIZE = 200
+EDGE_PIXEL_THRESHOLD = 40
 NOTE_TITLE_SUFFIX = re.compile(r"\s*[-|—_·]\s*小红书\s*$")
 
 
@@ -56,6 +60,26 @@ def is_flat_placeholder(image: Image.Image) -> bool:
         Image.Resampling.NEAREST,
     ).getcolors(maxcolors=4096)
     return colors is not None and len(colors) <= 2
+
+
+def is_low_information_image(image: Image.Image) -> bool:
+    """整张图几乎没有笔画和纹理（大色块、模糊光斑一类）时判为无意义图。"""
+    edges = (
+        image.convert("L")
+        .resize(
+            (EDGE_SAMPLE_SIZE, EDGE_SAMPLE_SIZE),
+            Image.Resampling.LANCZOS,
+        )
+        .filter(ImageFilter.FIND_EDGES)
+    )
+    histogram = edges.histogram()
+    total = EDGE_SAMPLE_SIZE * EDGE_SAMPLE_SIZE
+    strong = sum(
+        count
+        for value, count in enumerate(histogram)
+        if value >= EDGE_PIXEL_THRESHOLD
+    )
+    return strong / total < LOW_INFORMATION_EDGE_RATIO
 
 
 def normalize_xhs_url(value: str) -> str:
@@ -154,8 +178,10 @@ def download_note_images(context, urls: list[str], target_dir: str | Path) -> li
             if not response.ok:
                 continue
             with Image.open(BytesIO(response.body())) as image:
-                if not is_useful_note_image(*image.size) or is_flat_placeholder(
-                    image
+                if (
+                    not is_useful_note_image(*image.size)
+                    or is_flat_placeholder(image)
+                    or is_low_information_image(image)
                 ):
                     continue
                 directory.mkdir(parents=True, exist_ok=True)

@@ -4781,6 +4781,9 @@ class HotContentPage(QtWidgets.QWidget):
         image_collect_page = QtWidgets.QWidget()
         image_collect_layout = QtWidgets.QHBoxLayout(image_collect_page)
         image_collect_layout.setContentsMargins(0, 0, 0, 0)
+        image_list_layout = QtWidgets.QVBoxLayout()
+        image_list_layout.setContentsMargins(0, 0, 0, 0)
+        image_list_layout.setSpacing(8)
         self.collected_image_list = QtWidgets.QListWidget()
         self.collected_image_list.setViewMode(
             QtWidgets.QListView.ViewMode.IconMode
@@ -4799,7 +4802,14 @@ class HotContentPage(QtWidgets.QWidget):
         )
         self.image_analysis_edit = QtWidgets.QPlainTextEdit()
         self.image_analysis_edit.setReadOnly(True)
-        image_collect_layout.addWidget(self.collected_image_list)
+        self.delete_collected_image_button = QtWidgets.QPushButton("删除选中图片")
+        self.delete_collected_image_button.setObjectName("secondaryButton")
+        self.delete_collected_image_button.clicked.connect(
+            self.delete_selected_collected_image
+        )
+        image_list_layout.addWidget(self.collected_image_list)
+        image_list_layout.addWidget(self.delete_collected_image_button)
+        image_collect_layout.addLayout(image_list_layout)
         image_collect_layout.addWidget(self.image_analysis_edit, 1)
         self.result_tabs.addTab(image_collect_page, "图片采集")
 
@@ -5136,6 +5146,31 @@ class HotContentPage(QtWidgets.QWidget):
             )
             return
         self.image_analysis_edit.setPlainText(self.image_analysis[row])
+
+    def delete_selected_collected_image(self) -> None:
+        item = self.selected_item()
+        row = self.collected_image_list.currentRow()
+        if item is None or row < 0 or row >= len(item.images):
+            QtWidgets.QMessageBox.information(
+                self,
+                "没有选中图片",
+                "请先在“图片采集”里选中一张要删除的图片。",
+            )
+            return
+        # 识别结果和图片文案按顺序与图片一一对应，数量对得上时同步删除，避免错位。
+        if len(self.image_analysis) == len(item.images):
+            self.image_analysis.pop(row)
+        original = self.original
+        if original is not None and len(original.image_copy_items) == len(
+            item.images
+        ):
+            original.image_copy_items.pop(row)
+            self.image_copy_edit.setPlainText(self.image_copy_text(original))
+            self.image_prompt_edit.setPlainText(
+                "\n\n".join(self.image_prompt_values(original))
+            )
+        item.images.pop(row)
+        self._refresh_collected_images(item.images)
 
     def _on_rewrite_error(self, message: str) -> None:
         self.rewrite_status.setText(f"生成失败：{message}")

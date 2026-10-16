@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtWidgets
 from openpyxl import Workbook
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from playwright.sync_api import sync_playwright
 
 from api_client import APIClientError, APIConfig, APIMartClient
@@ -127,6 +127,7 @@ from xhs_collector import (
     clean_note_title,
     download_note_images,
     is_flat_placeholder,
+    is_low_information_image,
     is_note_image_url,
     is_useful_note_image,
     normalize_xhs_url,
@@ -142,6 +143,24 @@ def _note_like_png(width: int = 900, height: int = 1200) -> bytes:
         draw.rectangle((60, 520, width - 60, height - 80), fill="#F45D8D")
         draw.ellipse((120, 160, 320, 360), fill="#2B6CB0")
         image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _blob_png(width: int = 1080, height: int = 1440) -> bytes:
+    """构造一张无文字、无内容的模糊色块图（爆款里的装饰性废图）。"""
+    buffer = BytesIO()
+    with Image.new("RGB", (width, height), "#FCFBFD") as canvas:
+        layer = Image.new("RGB", (width, height), "#FCFBFD")
+        ImageDraw.Draw(layer).ellipse(
+            (width * 0.33, height * 0.36, width * 0.67, height * 0.65),
+            fill="#9FE3DC",
+        )
+        blob = Image.blend(
+            canvas,
+            layer.filter(ImageFilter.GaussianBlur(24)),
+            0.85,
+        )
+        blob.save(buffer, format="PNG")
     return buffer.getvalue()
 
 
@@ -1894,6 +1913,7 @@ class CoreTests(unittest.TestCase):
 
     def test_download_note_images_saves_files(self):
         payload = _note_like_png()
+        blob_payload = _blob_png()
         icon_buffer = BytesIO()
         with Image.new("RGB", (64, 64), "white") as icon:
             icon.save(icon_buffer, format="PNG")
@@ -1910,12 +1930,18 @@ class CoreTests(unittest.TestCase):
             def body(self) -> bytes:
                 return icon_payload
 
+        class FakeBlobResponse(FakeResponse):
+            def body(self) -> bytes:
+                return blob_payload
+
         class FakeRequest:
             def get(self, url: str, **kwargs):
                 if url.endswith("/bad"):
                     raise RuntimeError("下载失败")
                 if "/icon" in url:
                     return FakeIconResponse()
+                if "/blob" in url:
+                    return FakeBlobResponse()
                 return FakeResponse()
 
         class FakeContext:
@@ -1927,6 +1953,7 @@ class CoreTests(unittest.TestCase):
                 [
                     "https://sns-webpic-qc.xhscdn.com/note-1",
                     "https://sns-webpic-qc.xhscdn.com/icon-1",
+                    "https://sns-webpic-qc.xhscdn.com/blob-1",
                     "https://sns-webpic-qc.xhscdn.com/bad",
                     "https://sns-webpic-qc.xhscdn.com/note-2",
                 ],
@@ -1967,6 +1994,14 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(
             is_note_image_url("https://sns-webpic-qc.xhscdn.com/note-1")
         )
+
+    def test_low_information_images_are_skipped(self):
+        with Image.open(BytesIO(_blob_png())) as blob:
+            self.assertTrue(is_low_information_image(blob))
+        with Image.open(BytesIO(_note_like_png())) as card:
+            self.assertFalse(is_low_information_image(card))
+        with Image.new("RGB", (1080, 1440), "#FCFBFD") as blank:
+            self.assertTrue(is_low_information_image(blank))
 
     def test_clean_note_title_strips_platform_signature(self):
         self.assertEqual(
@@ -2209,6 +2244,52 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(table.item(0, 2).text(), "别老反复擦")
             self.assertEqual(table.item(1, 4).text(), "生成一张3:4竖版中文图文，第二张。")
             self.assertEqual(len(window.image_page.selected_reference_paths()), 2)
+        window.close()
+
+    def test_hot_content_deletes_selected_collected_image(self):
+        window = MainWindow()
+        page = window.hot_content_page
+        with tempfile.TemporaryDirectory() as temp:
+            paths: list[str] = []
+            for index in range(3):
+                path = Path(temp) / f"原图{index + 1:02d}.jpg"
+                with Image.new("RGB", (16, 16), "white") as image:
+                    image.save(path, format="JPEG")
+                paths.append(str(path))
+            item = HotContentItem(
+                source_mode="链接采集",
+                title="久坐党护理",
+                images=list(paths),
+            )
+            page.items = [item]
+            page._refresh_table()
+            page.table.selectRow(0)
+            self.app.processEvents()
+            page.image_analysis = ["图一识别", "图二识别", "图三识别"]
+            page.original = OriginalContent(
+                title="久坐党护理",
+                body="正文",
+                tags=["肛周护理"],
+                cover_title="久坐党护理",
+                pages=[{"heading": "要点", "copy": "正文", "image_prompt": "提示词"}],
+                image_copy_items=[
+                    {"index": 1, "image_copy": "第一张", "image_prompt": "提示词一"},
+                    {"index": 2, "image_copy": "第二张", "image_prompt": "提示词二"},
+                    {"index": 3, "image_copy": "第三张", "image_prompt": "提示词三"},
+                ],
+            )
+            page.collected_image_list.setCurrentRow(1)
+            page.delete_selected_collected_image()
+            self.app.processEvents()
+            self.assertEqual(page.collected_image_list.count(), 2)
+            self.assertEqual(item.images, [paths[0], paths[2]])
+            self.assertEqual(page.image_analysis, ["图一识别", "图三识别"])
+            self.assertEqual(
+                [entry["image_copy"] for entry in page.original.image_copy_items],
+                ["第一张", "第三张"],
+            )
+            self.assertEqual(page.collected_image_list.currentRow(), 0)
+            self.assertIn("图一识别", page.image_analysis_edit.toPlainText())
         window.close()
 
     def test_hot_content_sends_to_video_generation(self):
