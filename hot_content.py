@@ -11,6 +11,7 @@ from uuid import uuid4
 from openpyxl import Workbook
 
 from api_client import APIConfig, APIMartClient
+from image_reference import to_data_uri
 from prompts import build_image_prompt, normalize_style_name
 
 
@@ -158,6 +159,86 @@ def _normalize_tags(value: object) -> list[str]:
 
 
 RECOMMENDED_TAG_COUNT = 5
+IMAGE_ANALYSIS_MAX_IMAGES = 9
+
+
+def build_image_analysis_prompt(index: int, total: int) -> str:
+    return f"""请识别这张小红书爆款图文的第 {index} 张图（共 {total} 张），并给出二次原创方案。
+
+第一步，客观识别画面内容：
+1. 画面主体：有没有人物、产品或场景，人物在做什么。
+2. 构图与配色：主体位置、镜头视角、光线、主色调和背景元素。
+3. 图中文字：画面里出现的中文标题、正文和标签，逐条列出。
+
+第二步，给出二次原创方案（不要过度改款）：
+保持原图的画面主体、构图布局、配色关系和整体风格尽量接近，只允许轻微细节变化，
+例如替换背景里的小物件、微调光线和色彩明暗、改写画面文字，不要更换主体，不要改变场景类型。
+
+只输出简体中文纯文本，不超过 5 行，格式固定：
+画面主体：……
+构图与配色：……
+图中文字：……
+二次原创方案：……""".strip()
+
+
+def mock_image_analysis(
+    index: int,
+    total: int,
+    *,
+    theme: str = "",
+) -> str:
+    subject = theme or "小红书图文"
+    return (
+        f"画面主体：第 {index}/{total} 张图围绕“{subject}”，主体居中，"
+        "配有中文标题和说明文字。\n"
+        "构图与配色：竖版 3:4，浅色背景，配色清爽，文字集中在画面上方。\n"
+        "图中文字：标题大字和两行说明文字，均为简体中文。\n"
+        "二次原创方案：保持相同的画面主体、构图布局和整体风格，"
+        "只微调背景小物件、光线明暗和文字表达，不更换主体，不过度改款。"
+    )
+
+
+def analyze_reference_images(
+    images: list[str],
+    *,
+    model: str,
+    settings: dict,
+    theme: str = "",
+    client: APIMartClient | None = None,
+) -> list[str]:
+    paths = [str(path).strip() for path in images if str(path).strip()]
+    paths = paths[:IMAGE_ANALYSIS_MAX_IMAGES]
+    if not paths:
+        return []
+    total = len(paths)
+    if settings.get("mock_mode"):
+        return [
+            mock_image_analysis(index, total, theme=theme)
+            for index in range(1, total + 1)
+        ]
+    actual_client = client or APIMartClient(
+        APIConfig(
+            base_url=str(settings.get("base_url", "https://api.apib.ai/v1")),
+            api_key=str(settings.get("api_key", "")),
+        )
+    )
+    results: list[str] = []
+    for index, path in enumerate(paths, start=1):
+        try:
+            image_uri = to_data_uri(path)
+        except OSError as exc:
+            results.append(f"第 {index} 张原图读取失败：{exc}")
+            continue
+        results.append(
+            actual_client.multimodal_response(
+                model=model or "gpt-4o-mini",
+                prompt=build_image_analysis_prompt(index, total),
+                image_data_uris=[image_uri],
+                max_tokens=1500,
+                temperature=0.3,
+            )
+        )
+    return results
 
 
 def shuffle_tags(
@@ -218,10 +299,29 @@ def build_rewrite_prompt(
     audience: str,
     style: str,
     target_word_count: int,
+    image_analysis: list[str] | None = None,
 ) -> str:
     style_profile = CONTENT_STYLE_PROFILES.get(style, {})
     style_description = style_profile.get("description", style)
     style_example = style_profile.get("example", "")
+    analysis_values = [
+        str(value).strip() for value in (image_analysis or []) if str(value).strip()
+    ]
+    if analysis_values:
+        analysis_lines = [
+            f"第 {index} 张原图：{value}"
+            for index, value in enumerate(analysis_values, start=1)
+        ]
+        analysis_lines.append(
+            "每页 image_prompt 必须以对应原图的识别结果为基础做二次原创："
+            "保持原图的主体、构图布局、配色关系和整体风格尽量接近，"
+            "只做轻微细节变化，不要过度改款。"
+        )
+        image_section = (
+            "原图识别与二次原创方案：\n" + "\n".join(analysis_lines) + "\n\n"
+        )
+    else:
+        image_section = ""
     return f"""
 请根据“参考爆款结构”和“用户提供的参考内容”，生成全新的原创图文内容。
 
@@ -249,7 +349,7 @@ def build_rewrite_prompt(
 正文：{item.body}
 标签：{" ".join(item.tags)}
 
-用户参考内容：
+{image_section}用户参考内容：
 {reference_content}
 
 产品或服务：
@@ -272,7 +372,7 @@ def build_rewrite_prompt(
       "image_prompt": "该页图片画面和中文文字排版描述"
     }}
   ],
-  "video_prompt": "基于新文案的视频分镜提示词"
+  "video_prompt": "根据新文案生成的图生视频分镜提示词，逐条描述画面如何从图片动起来：运镜方式、元素动效、节奏和时长"
 }}
 """.strip()
 
@@ -287,6 +387,7 @@ def generate_original_content(
     target_word_count: int,
     text_model: str,
     settings: dict,
+    image_analysis: list[str] | None = None,
     client: APIMartClient | None = None,
 ) -> OriginalContent:
     if not reference_content.strip():
@@ -316,6 +417,7 @@ def generate_original_content(
         audience=audience,
         style=style,
         target_word_count=target_word_count,
+        image_analysis=image_analysis,
     )
     response = actual_client.chat_completion(
         model=text_model or "gpt-4o-mini",

@@ -15,11 +15,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtWidgets
 from openpyxl import Workbook
+from PIL import Image
 from playwright.sync_api import sync_playwright
 
 from api_client import APIClientError, APIConfig, APIMartClient
 from app import (
     FALLBACK_MODEL_CATALOG,
+    HotRewriteThread,
     MainWindow,
     build_batch_image_jobs,
     build_manual_image_items,
@@ -80,6 +82,8 @@ from hypit_tutorial import ASSET_DIR, build_tutorial_html
 from hot_content import (
     HotContentItem,
     OriginalContent,
+    analyze_reference_images,
+    build_image_analysis_prompt,
     build_rewrite_prompt,
     export_original_content_excel,
     generate_original_content,
@@ -89,6 +93,7 @@ from hot_content import (
 from image_reference import (
     build_reference_instruction,
     max_reference_images_for_model,
+    to_data_uri,
     validate_reference_image,
 )
 from mock_engine import create_video_thumbnail, generate_mock_image, generate_mock_video
@@ -1449,6 +1454,62 @@ class CoreTests(unittest.TestCase):
         self.assertIn("去 AI 味", prompt)
         self.assertIn("口语", prompt)
         self.assertIn("像真人在说话", prompt)
+        self.assertNotIn("原图识别与二次原创方案", prompt)
+
+    def test_image_analysis_prompt_keeps_original_layout(self):
+        prompt = build_image_analysis_prompt(2, 5)
+        self.assertIn("第 2 张图（共 5 张）", prompt)
+        self.assertIn("二次原创方案", prompt)
+        self.assertIn("构图", prompt)
+        self.assertIn("不要过度改款", prompt)
+
+    def test_analyze_reference_images_uses_mock_and_data_uri(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "原图01.png"
+            with Image.new("RGB", (40, 40), "white") as image:
+                image.save(path)
+            self.assertTrue(to_data_uri(path).startswith("data:image/jpeg;base64,"))
+            analysis = analyze_reference_images(
+                [str(path)],
+                model="gpt-4o-mini",
+                settings={"mock_mode": True},
+                theme="久坐党护理",
+            )
+        self.assertEqual(len(analysis), 1)
+        self.assertIn("久坐党护理", analysis[0])
+        self.assertIn("不过度改款", analysis[0])
+
+    def test_rewrite_prompt_includes_image_analysis(self):
+        item = HotContentItem(
+            source_mode="链接采集",
+            title="标题",
+            body="正文",
+            tags=["肛周护理"],
+        )
+        prompt = build_rewrite_prompt(
+            item,
+            reference_content="参考内容",
+            product_info="",
+            audience="",
+            style="小红书风格",
+            target_word_count=300,
+            image_analysis=["画面主体：人物坐在书桌前。二次原创方案：保持构图，微调桌面小物件。"],
+        )
+        self.assertIn("原图识别与二次原创方案：", prompt)
+        self.assertIn("第 1 张原图：画面主体：人物坐在书桌前", prompt)
+        self.assertIn("不要过度改款", prompt)
+        original = generate_original_content(
+            item,
+            reference_content="参考内容",
+            product_info="",
+            audience="",
+            style="小红书风格",
+            target_word_count=200,
+            text_model="gpt-4o-mini",
+            settings={"mock_mode": True},
+            image_analysis=["画面主体：人物坐在书桌前。"],
+        )
+        self.assertTrue(original.title)
 
     def test_replicate_reference_instruction(self):
         text = build_reference_instruction("replicate", image_count=2)
@@ -1570,6 +1631,83 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(page.table.rowCount(), 0)
         self.assertFalse(page.reference_edit.toPlainText())
         self.assertFalse(page.original_title_edit.text())
+        window.close()
+
+    def test_hot_rewrite_thread_returns_image_analysis(self):
+        window = MainWindow()
+        page = window.hot_content_page
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "原图01.png"
+            with Image.new("RGB", (32, 32), "white") as image:
+                image.save(path)
+            thread = HotRewriteThread(
+                {
+                    "item": HotContentItem(
+                        source_mode="链接采集",
+                        title="久坐党护理",
+                        tags=["肛周护理", "久坐党"],
+                        images=[str(path)],
+                    ),
+                    "reference_content": "1、如厕后减少反复摩擦",
+                    "product_info": "",
+                    "audience": "",
+                    "style": "小红书风格",
+                    "target_word_count": 200,
+                    "text_model": "gpt-4o-mini",
+                    "settings": {"mock_mode": True},
+                }
+            )
+            received: list = []
+            thread.result.connect(received.append)
+            thread.run()
+        self.assertEqual(len(received), 1)
+        original, image_analysis = received[0]
+        self.assertTrue(original.tags)
+        self.assertEqual(len(image_analysis), 1)
+        page._on_rewrite_result(received[0])
+        self.assertEqual(len(page.image_analysis), 1)
+        self.assertIn("久坐党护理", page.image_analysis_edit.toPlainText())
+        self.assertIs(page.result_tabs.currentWidget(), page.original_page)
+        window.close()
+
+    def test_hot_content_sends_to_video_generation(self):
+        window = MainWindow()
+        page = window.hot_content_page
+        page.original = OriginalContent(
+            title="久坐党护理",
+            body="测试正文",
+            tags=["肛周护理"],
+            cover_title="久坐党护理",
+            pages=[{"heading": "要点", "copy": "测试正文", "image_prompt": "测试"}],
+            video_prompt="镜头缓慢推进，图标依次出现。",
+        )
+        page.original_title_edit.setText("久坐党护理")
+        page.video_prompt_edit.setPlainText("镜头缓慢推进，图标依次出现。")
+        page.send_to_video_generation()
+        self.assertIs(window.stack.currentWidget(), window.video_page)
+        self.assertEqual(window.video_page.video_theme.text(), "久坐党护理")
+        self.assertEqual(
+            window.video_page.prompt_edit.toPlainText(),
+            "镜头缓慢推进，图标依次出现。",
+        )
+        window.close()
+
+    def test_video_page_loads_generated_images(self):
+        window = MainWindow()
+        page = window.video_page
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "新图01.png"
+            with Image.new("RGB", (32, 32), "white") as image:
+                image.save(path)
+            missing = Path(temp) / "不存在.png"
+            page.load_video_package(
+                theme="图文转视频",
+                video_prompt="镜头推进。",
+                image_paths=[str(path), str(path), str(missing)],
+            )
+            self.assertEqual(page.image_list.count(), 1)
+            self.assertEqual(page.image_list.item(0).text(), str(path))
+        self.assertEqual(page.image_count_label.text(), "1 张")
         window.close()
 
     def test_ui_smoke(self):

@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import base64
+from io import BytesIO
 from pathlib import Path
+
+from PIL import Image
 
 
 REFERENCE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 REFERENCE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+
+
+def to_data_uri(path: str | Path) -> str:
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        image.thumbnail((1280, 1280))
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=82, optimize=True)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 def max_reference_images_for_model(model: str) -> int:

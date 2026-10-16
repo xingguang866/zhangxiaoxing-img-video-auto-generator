@@ -54,6 +54,7 @@ from hot_content import (
     CONTENT_STYLE_PROFILES,
     HotContentItem,
     OriginalContent,
+    analyze_reference_images,
     export_original_content_excel,
     generate_original_content,
 )
@@ -1831,6 +1832,25 @@ class VideoPage(BaseGenerationPage):
 
     def _update_image_count(self) -> None:
         self.image_count_label.setText(f"{self.image_list.count()} 张")
+
+    def load_video_package(
+        self,
+        *,
+        theme: str,
+        video_prompt: str,
+        image_paths: list[str] | None = None,
+    ) -> None:
+        self.video_theme.setText(theme)
+        self.prompt_edit.setPlainText(video_prompt)
+        for path in image_paths or []:
+            value = str(path).strip()
+            if not value or not Path(value).exists():
+                continue
+            if self.image_list.findItems(value, QtCore.Qt.MatchFlag.MatchExactly):
+                continue
+            self.image_list.addItem(value)
+        self._update_image_count()
+        self.status_label.setText("已导入爆款二次原创内容，可直接生成图生视频。")
 
     def connect_worker(self, worker: GenerationWorker) -> None:
         super().connect_worker(worker)
@@ -4556,7 +4576,23 @@ class HotRewriteThread(QtCore.QThread):
 
     def run(self) -> None:
         try:
-            self.result.emit(generate_original_content(**self.params))
+            item = self.params["item"]
+            image_analysis: list[str] = []
+            if item.images:
+                try:
+                    image_analysis = analyze_reference_images(
+                        item.images,
+                        model=str(self.params.get("text_model", "")),
+                        settings=self.params.get("settings", {}),
+                        theme=item.title,
+                    )
+                except Exception as exc:
+                    image_analysis = [f"原图识别未完成：{exc}"]
+            original = generate_original_content(
+                **self.params,
+                image_analysis=image_analysis,
+            )
+            self.result.emit((original, image_analysis))
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -4569,6 +4605,7 @@ class HotContentPage(QtWidgets.QWidget):
         self.collect_thread: HotCollectThread | None = None
         self.rewrite_thread: HotRewriteThread | None = None
         self.original: OriginalContent | None = None
+        self.image_analysis: list[str] = []
 
         root = QtWidgets.QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -4720,6 +4757,10 @@ class HotContentPage(QtWidgets.QWidget):
         self.analysis_edit.setReadOnly(True)
         self.result_tabs.addTab(self.analysis_edit, "采集内容")
 
+        self.image_analysis_edit = QtWidgets.QPlainTextEdit()
+        self.image_analysis_edit.setReadOnly(True)
+        self.result_tabs.addTab(self.image_analysis_edit, "图片二次原创")
+
         original_page = QtWidgets.QWidget()
         original_layout = QtWidgets.QFormLayout(original_page)
         self.original_title_edit = QtWidgets.QLineEdit()
@@ -4730,7 +4771,8 @@ class HotContentPage(QtWidgets.QWidget):
         original_layout.addRow("封面标题", self.original_cover_edit)
         original_layout.addRow("标签", self.original_tags_edit)
         original_layout.addRow("正文", self.original_body_edit)
-        self.result_tabs.addTab(original_page, "原创文案")
+        self.original_page = original_page
+        self.result_tabs.addTab(self.original_page, "原创文案")
 
         self.page_script_edit = QtWidgets.QPlainTextEdit()
         self.result_tabs.addTab(self.page_script_edit, "分页脚本")
@@ -4752,8 +4794,12 @@ class HotContentPage(QtWidgets.QWidget):
         send_image_button = QtWidgets.QPushButton("发送到图文生成")
         send_image_button.setObjectName("primaryButton")
         send_image_button.clicked.connect(self.send_to_image_generation)
+        send_video_button = QtWidgets.QPushButton("发送到视频生成")
+        send_video_button.setObjectName("primaryButton")
+        send_video_button.clicked.connect(self.send_to_video_generation)
         actions.addWidget(export_button)
         actions.addWidget(send_image_button)
+        actions.addWidget(send_video_button)
         main.addLayout(actions)
 
         root.addWidget(scrollable_side_card(side, 450))
@@ -4803,6 +4849,7 @@ class HotContentPage(QtWidgets.QWidget):
                 return
         self.items = []
         self.original = None
+        self.image_analysis = []
         self.table.setRowCount(0)
         self.link_edit.clear()
         self.keyword_edit.clear()
@@ -4810,6 +4857,7 @@ class HotContentPage(QtWidgets.QWidget):
         self.product_edit.clear()
         self.audience_edit.clear()
         self.analysis_edit.clear()
+        self.image_analysis_edit.clear()
         self.original_title_edit.clear()
         self.original_cover_edit.clear()
         self.original_tags_edit.clear()
@@ -4960,8 +5008,10 @@ class HotContentPage(QtWidgets.QWidget):
         self.rewrite_button.setEnabled(True)
         self.rewrite_button.setText("生成原创内容")
 
-    def _on_rewrite_result(self, original: OriginalContent) -> None:
+    def _on_rewrite_result(self, payload) -> None:
+        original, image_analysis = payload
         self.original = original
+        self.image_analysis = list(image_analysis)
         self.original_title_edit.setText(original.title)
         self.original_cover_edit.setText(original.cover_title)
         self.original_tags_edit.setText(" ".join(original.tags))
@@ -4973,8 +5023,16 @@ class HotContentPage(QtWidgets.QWidget):
         )
         self.image_prompt_edit.setPlainText("\n\n".join(prompts))
         self.video_prompt_edit.setPlainText(original.video_prompt)
-        self.result_tabs.setCurrentIndex(1)
-        self.rewrite_status.setText("原创内容已生成，可修改后导出或发送到图文生成。")
+        self.image_analysis_edit.setPlainText(
+            "\n\n".join(
+                f"第 {index} 张原图：\n{value}"
+                for index, value in enumerate(self.image_analysis, start=1)
+            )
+        )
+        self.result_tabs.setCurrentWidget(self.original_page)
+        self.rewrite_status.setText(
+            "原创内容已生成，可修改后导出，或发送到图文生成、视频生成。"
+        )
 
     def _on_rewrite_error(self, message: str) -> None:
         self.rewrite_status.setText(f"生成失败：{message}")
@@ -5095,6 +5153,36 @@ class HotContentPage(QtWidgets.QWidget):
             reference_images=item.images if item else [],
         )
         self.main_window.show_page("image_page")
+
+    def send_to_video_generation(self) -> None:
+        try:
+            original = self._current_original()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "没有原创内容", str(exc))
+            return
+        video_prompt = original.video_prompt.strip()
+        if not video_prompt:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有视频提示词",
+                "请先在“视频提示词”里填写或重新生成原创内容。",
+            )
+            return
+        image_paths = [
+            str(entry.get("path", "")).strip()
+            for entry in self.main_window.image_page.gallery.items
+            if str(entry.get("path", "")).strip()
+            and Path(str(entry.get("path"))).exists()
+        ]
+        if not image_paths:
+            item = self.selected_item()
+            image_paths = [str(path) for path in item.images] if item else []
+        self.main_window.video_page.load_video_package(
+            theme=original.title,
+            video_prompt=video_prompt,
+            image_paths=image_paths,
+        )
+        self.main_window.show_page("video_page")
 
 
 class ModelsPage(QtWidgets.QWidget):
