@@ -56,6 +56,8 @@ from hot_content import (
     OriginalContent,
     analyze_reference_images,
     export_original_content_excel,
+    extract_image_texts,
+    generate_image_copy_plan,
     generate_original_content,
 )
 from image_reference import (
@@ -1308,6 +1310,7 @@ class ImagePage(BaseGenerationPage):
         image_prompts: list[str],
         image_style: str,
         reference_images: list[str] | None = None,
+        page_rows: list[dict] | None = None,
     ) -> None:
         self.generation_mode_combo.setCurrentIndex(
             self.generation_mode_combo.findData("imported")
@@ -1316,8 +1319,9 @@ class ImagePage(BaseGenerationPage):
         self.cover_title_edit.setText(original.cover_title or original.title)
         if self.style_combo.findText(image_style) >= 0:
             self.style_combo.setCurrentText(image_style)
-        self.page_task_table.setRowCount(len(original.pages))
-        for row, page in enumerate(original.pages):
+        rows = page_rows if page_rows else original.pages
+        self.page_task_table.setRowCount(len(rows))
+        for row, page in enumerate(rows):
             values = [
                 str(row + 1),
                 str(page.get("heading", "")).strip(),
@@ -4592,7 +4596,21 @@ class HotRewriteThread(QtCore.QThread):
                 **self.params,
                 image_analysis=image_analysis,
             )
-            self.result.emit((original, image_analysis))
+            copy_error = ""
+            try:
+                original.image_copy_items = generate_image_copy_plan(
+                    item,
+                    image_analysis=image_analysis,
+                    style=str(self.params.get("style", "")),
+                    product_info=str(self.params.get("product_info", "")),
+                    audience=str(self.params.get("audience", "")),
+                    text_model=str(self.params.get("text_model", "")),
+                    settings=self.params.get("settings", {}),
+                )
+            except Exception as exc:
+                original.image_copy_items = []
+                copy_error = str(exc)
+            self.result.emit((original, image_analysis, copy_error))
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -4760,16 +4778,41 @@ class HotContentPage(QtWidgets.QWidget):
         self.analysis_edit.setReadOnly(True)
         self.result_tabs.addTab(self.analysis_edit, "采集内容")
 
+        image_collect_page = QtWidgets.QWidget()
+        image_collect_layout = QtWidgets.QHBoxLayout(image_collect_page)
+        image_collect_layout.setContentsMargins(0, 0, 0, 0)
+        self.collected_image_list = QtWidgets.QListWidget()
+        self.collected_image_list.setViewMode(
+            QtWidgets.QListView.ViewMode.IconMode
+        )
+        self.collected_image_list.setIconSize(QtCore.QSize(116, 154))
+        self.collected_image_list.setResizeMode(
+            QtWidgets.QListView.ResizeMode.Adjust
+        )
+        self.collected_image_list.setMovement(
+            QtWidgets.QListView.Movement.Static
+        )
+        self.collected_image_list.setWordWrap(True)
+        self.collected_image_list.setFixedWidth(300)
+        self.collected_image_list.currentRowChanged.connect(
+            self._on_collected_image_selected
+        )
         self.image_analysis_edit = QtWidgets.QPlainTextEdit()
         self.image_analysis_edit.setReadOnly(True)
-        self.result_tabs.addTab(self.image_analysis_edit, "图片二次原创")
+        image_collect_layout.addWidget(self.collected_image_list)
+        image_collect_layout.addWidget(self.image_analysis_edit, 1)
+        self.result_tabs.addTab(image_collect_page, "图片采集")
 
         original_page = QtWidgets.QWidget()
         original_layout = QtWidgets.QFormLayout(original_page)
+        self.original_source_edit = QtWidgets.QPlainTextEdit()
+        self.original_source_edit.setReadOnly(True)
+        self.original_source_edit.setFixedHeight(120)
         self.original_title_edit = QtWidgets.QLineEdit()
         self.original_cover_edit = QtWidgets.QLineEdit()
         self.original_tags_edit = QtWidgets.QLineEdit()
         self.original_body_edit = QtWidgets.QPlainTextEdit()
+        original_layout.addRow("采集原文", self.original_source_edit)
         original_layout.addRow("标题", self.original_title_edit)
         original_layout.addRow("封面标题", self.original_cover_edit)
         original_layout.addRow("标签", self.original_tags_edit)
@@ -4777,10 +4820,14 @@ class HotContentPage(QtWidgets.QWidget):
         self.original_page = original_page
         self.result_tabs.addTab(self.original_page, "原创文案")
 
-        self.page_script_edit = QtWidgets.QPlainTextEdit()
-        self.result_tabs.addTab(self.page_script_edit, "分页脚本")
+        self.image_copy_edit = QtWidgets.QPlainTextEdit()
+        self.image_copy_edit.setReadOnly(True)
+        self.result_tabs.addTab(self.image_copy_edit, "图片文案二创")
+
         self.image_prompt_edit = QtWidgets.QPlainTextEdit()
         self.result_tabs.addTab(self.image_prompt_edit, "生图提示词")
+        self.page_script_edit = QtWidgets.QPlainTextEdit()
+        self.result_tabs.addTab(self.page_script_edit, "分页脚本")
         self.video_prompt_edit = QtWidgets.QPlainTextEdit()
         self.result_tabs.addTab(self.video_prompt_edit, "视频提示词")
         main.addWidget(self.result_tabs, 2)
@@ -4860,7 +4907,10 @@ class HotContentPage(QtWidgets.QWidget):
         self.product_edit.clear()
         self.audience_edit.clear()
         self.analysis_edit.clear()
+        self.original_source_edit.clear()
+        self.image_copy_edit.clear()
         self.image_analysis_edit.clear()
+        self.collected_image_list.clear()
         self.original_title_edit.clear()
         self.original_cover_edit.clear()
         self.original_tags_edit.clear()
@@ -4969,6 +5019,9 @@ class HotContentPage(QtWidgets.QWidget):
         if item is None:
             return
         self.analysis_edit.setPlainText(item.analysis_text())
+        self.original_source_edit.setPlainText(item.analysis_text())
+        self._refresh_collected_images(item.images)
+        self._on_collected_image_selected(self.collected_image_list.currentRow())
         self.rewrite_status.setText(f"已选择：{item.title or '未命名内容'}")
 
     def start_rewrite(self) -> None:
@@ -5009,7 +5062,7 @@ class HotContentPage(QtWidgets.QWidget):
         self.rewrite_button.setText("生成原创内容")
 
     def _on_rewrite_result(self, payload) -> None:
-        original, image_analysis = payload
+        original, image_analysis, copy_error = payload
         self.original = original
         self.image_analysis = list(image_analysis)
         self.original_title_edit.setText(original.title)
@@ -5017,22 +5070,72 @@ class HotContentPage(QtWidgets.QWidget):
         self.original_tags_edit.setText(" ".join(original.tags))
         self.original_body_edit.setPlainText(original.body)
         self.page_script_edit.setPlainText("\n".join(original.page_lines()))
-        prompts = original.image_prompts(
-            theme=original.title,
-            style=self.image_style_combo.currentText(),
+        self.image_prompt_edit.setPlainText(
+            "\n\n".join(self.image_prompt_values(original))
         )
-        self.image_prompt_edit.setPlainText("\n\n".join(prompts))
         self.video_prompt_edit.setPlainText(original.video_prompt)
-        self.image_analysis_edit.setPlainText(
-            "\n\n".join(
-                f"第 {index} 张原图：\n{value}"
-                for index, value in enumerate(self.image_analysis, start=1)
+        if original.image_copy_items:
+            self.image_copy_edit.setPlainText(self.image_copy_text(original))
+        elif copy_error:
+            self.image_copy_edit.setPlainText(f"图片文案二创未完成：{copy_error}")
+        else:
+            self.image_copy_edit.setPlainText(
+                "这次采集没有原图，不需要图片文案二创。"
             )
+        self._refresh_collected_images(
+            self.selected_item().images if self.selected_item() else []
         )
         self.result_tabs.setCurrentWidget(self.original_page)
         self.rewrite_status.setText(
             "原创内容已生成，可修改后导出，或发送到图文生成、视频生成。"
         )
+
+    def image_prompt_values(self, original: OriginalContent) -> list[str]:
+        if original.image_copy_items:
+            return [
+                str(entry.get("image_prompt", "")).strip()
+                for entry in original.image_copy_items
+            ]
+        return original.image_prompts(
+            theme=original.title,
+            style=self.image_style_combo.currentText(),
+        )
+
+    def image_copy_text(self, original: OriginalContent) -> str:
+        texts = extract_image_texts(self.image_analysis)
+        blocks: list[str] = []
+        for index, entry in enumerate(original.image_copy_items, start=1):
+            source = texts[index - 1].strip() if index - 1 < len(texts) else ""
+            blocks.append(
+                f"第 {index} 张图\n"
+                f"原图文字：{source or '未读取到文字'}\n"
+                f"二次原创：{str(entry.get('image_copy', '')).strip()}"
+            )
+        return "\n\n".join(blocks)
+
+    def _refresh_collected_images(self, paths: list[str]) -> None:
+        self.collected_image_list.clear()
+        for index, path in enumerate(paths or [], start=1):
+            item = QtWidgets.QListWidgetItem(f"原图 {index}")
+            if Path(str(path)).exists():
+                item.setIcon(QtGui.QIcon(str(path)))
+            item.setToolTip(str(path))
+            item.setSizeHint(QtCore.QSize(140, 200))
+            self.collected_image_list.addItem(item)
+        if self.collected_image_list.count():
+            self.collected_image_list.setCurrentRow(0)
+        else:
+            self.image_analysis_edit.setPlainText(
+                "关键词采集没有原图，或还没有采集到图片。"
+            )
+
+    def _on_collected_image_selected(self, row: int) -> None:
+        if row < 0 or row >= len(self.image_analysis):
+            self.image_analysis_edit.setPlainText(
+                "点击“生成原创内容”后会显示这一张图的识别结果和图中文字。"
+            )
+            return
+        self.image_analysis_edit.setPlainText(self.image_analysis[row])
 
     def _on_rewrite_error(self, message: str) -> None:
         self.rewrite_status.setText(f"生成失败：{message}")
@@ -5064,6 +5167,13 @@ class HotContentPage(QtWidgets.QWidget):
             for value in re.split(r"\n\s*\n", prompt_text)
             if value.strip()
         ]
+        if self.original.image_copy_items:
+            for index, entry in enumerate(self.original.image_copy_items):
+                if index < len(prompt_values):
+                    entry["image_prompt"] = prompt_values[index]
+            prompt_values = [
+                str(page.get("image_prompt", "")) for page in self.original.pages
+            ]
         if page_lines or prompt_values:
             pages: list[dict] = []
             total = max(len(page_lines), len(prompt_values))
@@ -5142,15 +5252,29 @@ class HotContentPage(QtWidgets.QWidget):
             return
         item = self.selected_item()
         image_style = self.image_style_combo.currentText()
-        prompts = original.image_prompts(
-            theme=original.title,
-            style=image_style,
-        )
+        page_rows: list[dict] | None = None
+        if original.image_copy_items:
+            page_rows = [
+                {
+                    "heading": f"第 {index} 张图",
+                    "copy": str(entry.get("image_copy", "")).strip(),
+                    "on_image_text": str(entry.get("image_copy", "")).strip(),
+                    "image_prompt": str(entry.get("image_prompt", "")).strip(),
+                }
+                for index, entry in enumerate(original.image_copy_items, start=1)
+            ]
+            prompts = [row["image_prompt"] for row in page_rows]
+        else:
+            prompts = original.image_prompts(
+                theme=original.title,
+                style=image_style,
+            )
         self.main_window.image_page.load_generation_package(
             original,
             image_prompts=prompts,
             image_style=image_style,
             reference_images=item.images if item else [],
+            page_rows=page_rows,
         )
         self.main_window.show_page("image_page")
 

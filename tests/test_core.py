@@ -86,10 +86,14 @@ from hot_content import (
     OriginalContent,
     analyze_reference_images,
     build_image_analysis_prompt,
+    build_image_copy_prompt,
     build_rewrite_prompt,
     export_original_content_excel,
+    extract_image_texts,
+    generate_image_copy_plan,
     generate_original_content,
     mock_original_content,
+    normalize_image_copy_payload,
     shuffle_tags,
 )
 from image_reference import (
@@ -1617,6 +1621,82 @@ class CoreTests(unittest.TestCase):
         self.assertIn("支持读取图片的模型", analysis[0])
         self.assertNotIn("抱歉", analysis[0])
 
+    def test_extract_image_texts_pulls_in_image_copy(self):
+        analysis = [
+            "画面主体：桌面上的湿厕纸。\n构图与配色：浅色背景。\n"
+            "图中文字：1. 标题：别反复摩擦\n2. 正文：保持清爽\n"
+            "二次原创方案：按上面的识别结果重绘这张图，保持原图的画面主体。",
+            "画面主体：人物在洗手。\n构图与配色：暖光。\n图中文字：无",
+        ]
+        texts = extract_image_texts(analysis)
+        self.assertEqual(len(texts), 2)
+        self.assertIn("别反复摩擦", texts[0])
+        self.assertIn("保持清爽", texts[0])
+        self.assertNotIn("二次原创方案", texts[0])
+        self.assertEqual(texts[1], "无")
+        self.assertEqual(extract_image_texts(["没有识别结果"]), [""])
+
+    def test_image_copy_prompt_requires_rewrite(self):
+        prompt = build_image_copy_prompt(
+            HotContentItem(source_mode="链接采集", title="久坐党护理"),
+            image_analysis=["图中文字：1. 标题：别反复摩擦"],
+            style="小红书风格",
+            product_info="马应龙彩虹湿厕纸",
+            audience="久坐上班族",
+        )
+        self.assertIn("不得照抄原句", prompt)
+        self.assertIn("去 AI 味", prompt)
+        self.assertIn("生图提示词", prompt)
+        self.assertIn("图中文字", prompt)
+        self.assertIn("马应龙彩虹湿厕纸", prompt)
+
+    def test_image_copy_plan_mock_and_normalization(self):
+        item = HotContentItem(source_mode="链接采集", title="久坐党护理")
+        analysis = [
+            "画面主体：桌面上的湿厕纸。\n图中文字：1. 标题：别反复摩擦\n"
+            "二次原创方案：按上面的识别结果重绘这张图。"
+        ]
+        plan = generate_image_copy_plan(
+            item,
+            image_analysis=analysis,
+            style="小红书风格",
+            product_info="",
+            audience="",
+            text_model="gpt-4o-mini",
+            settings={"mock_mode": True},
+        )
+        self.assertEqual(len(plan), 1)
+        self.assertIn("别反复摩擦", plan[0]["image_copy"])
+        self.assertIn("生成一张", plan[0]["image_prompt"])
+        self.assertEqual(
+            generate_image_copy_plan(
+                item,
+                image_analysis=[],
+                style="小红书风格",
+                product_info="",
+                audience="",
+                text_model="gpt-4o-mini",
+                settings={"mock_mode": True},
+            ),
+            [],
+        )
+        self.assertEqual(
+            normalize_image_copy_payload(
+                {
+                    "images": [
+                        {"index": 1, "image_copy": "别老反复擦", "image_prompt": "提示词一"},
+                        {"index": 2, "image_copy": "", "image_prompt": ""},
+                        {"index": 3, "copy": "擦完要清爽", "image_prompt": "提示词三"},
+                    ]
+                }
+            ),
+            [
+                {"index": 1, "image_copy": "别老反复擦", "image_prompt": "提示词一"},
+                {"index": 2, "image_copy": "擦完要清爽", "image_prompt": "提示词三"},
+            ],
+        )
+        self.assertEqual(normalize_image_copy_payload({"images": "bad"}), [])
+
     def test_rewrite_prompt_includes_image_analysis(self):
         item = HotContentItem(
             source_mode="链接采集",
@@ -1814,17 +1894,21 @@ class CoreTests(unittest.TestCase):
         window = MainWindow()
         page = window.hot_content_page
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "原图01.png"
+            path = Path(temp) / "原图01.jpg"
             with Image.new("RGB", (32, 32), "white") as image:
                 image.save(path)
+            item = HotContentItem(
+                source_mode="链接采集",
+                title="久坐党护理",
+                tags=["肛周护理", "久坐党"],
+                images=[str(path)],
+            )
+            page.items = [item]
+            page._refresh_table()
+            page.table.selectRow(0)
             thread = HotRewriteThread(
                 {
-                    "item": HotContentItem(
-                        source_mode="链接采集",
-                        title="久坐党护理",
-                        tags=["肛周护理", "久坐党"],
-                        images=[str(path)],
-                    ),
+                    "item": item,
                     "reference_content": "1、如厕后减少反复摩擦",
                     "product_info": "",
                     "audience": "",
@@ -1838,12 +1922,18 @@ class CoreTests(unittest.TestCase):
             thread.result.connect(received.append)
             thread.run()
         self.assertEqual(len(received), 1)
-        original, image_analysis = received[0]
+        original, image_analysis, copy_error = received[0]
         self.assertTrue(original.tags)
         self.assertEqual(len(image_analysis), 1)
+        self.assertEqual(copy_error, "")
+        self.assertEqual(len(original.image_copy_items), 1)
+        self.assertTrue(original.image_copy_items[0]["image_prompt"])
         page._on_rewrite_result(received[0])
         self.assertEqual(len(page.image_analysis), 1)
         self.assertIn("久坐党护理", page.image_analysis_edit.toPlainText())
+        self.assertIn("二次原创", page.image_copy_edit.toPlainText())
+        self.assertIn("生成一张", page.image_prompt_edit.toPlainText())
+        self.assertEqual(page.collected_image_list.count(), 1)
         self.assertIs(page.result_tabs.currentWidget(), page.original_page)
         window.close()
 
@@ -1880,6 +1970,92 @@ class CoreTests(unittest.TestCase):
         self.assertIsNotNone(page.original)
         self.assertTrue(page.original.title)
         self.assertEqual(len(page.original.tags), 1)
+        window.close()
+
+    def test_hot_content_tab_flow_and_image_rows(self):
+        window = MainWindow()
+        page = window.hot_content_page
+        self.assertEqual(
+            [
+                page.result_tabs.tabText(index)
+                for index in range(page.result_tabs.count())
+            ],
+            [
+                "采集内容",
+                "图片采集",
+                "原创文案",
+                "图片文案二创",
+                "生图提示词",
+                "分页脚本",
+                "视频提示词",
+            ],
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            paths: list[str] = []
+            for index in range(2):
+                path = Path(temp) / f"原图{index + 1:02d}.jpg"
+                with Image.new("RGB", (16, 16), "white") as image:
+                    image.save(path, format="JPEG")
+                paths.append(str(path))
+            page.items = [
+                HotContentItem(
+                    source_mode="链接采集",
+                    title="久坐党护理",
+                    body="减少反复摩擦",
+                    tags=["肛周护理"],
+                    images=paths,
+                )
+            ]
+            page._refresh_table()
+            page.table.selectRow(0)
+            self.app.processEvents()
+            self.assertEqual(page.collected_image_list.count(), 2)
+            self.assertFalse(page.collected_image_list.item(0).icon().isNull())
+            self.assertIn("减少反复摩擦", page.original_source_edit.toPlainText())
+
+            page.original = OriginalContent(
+                title="久坐党护理",
+                body="正文",
+                tags=["肛周护理"],
+                cover_title="久坐党护理",
+                pages=[
+                    {
+                        "heading": "别硬擦",
+                        "copy": "内容",
+                        "image_prompt": "生成一张3:4竖版中文知识科普图。视觉风格：手绘卡通。",
+                    }
+                ],
+                video_prompt="镜头推进。",
+                image_copy_items=[
+                    {
+                        "index": 1,
+                        "image_copy": "别老反复擦",
+                        "image_prompt": "生成一张3:4竖版中文图文，第一张。",
+                    },
+                    {
+                        "index": 2,
+                        "image_copy": "擦完要清爽",
+                        "image_prompt": "生成一张3:4竖版中文图文，第二张。",
+                    },
+                ],
+            )
+            page.image_analysis = [
+                "画面主体：桌面。\n图中文字：1. 标题：别反复摩擦",
+                "画面主体：洗手。\n图中文字：1. 标题：保持清爽",
+            ]
+            page._on_rewrite_result((page.original, page.image_analysis, ""))
+            self.assertIn("别老反复擦", page.image_copy_edit.toPlainText())
+            self.assertIn("别反复摩擦", page.image_copy_edit.toPlainText())
+            self.assertIn("第一张", page.image_prompt_edit.toPlainText())
+
+            page.send_to_image_generation()
+            self.app.processEvents()
+            self.assertIs(window.stack.currentWidget(), window.image_page)
+            table = window.image_page.page_task_table
+            self.assertEqual(table.rowCount(), 2)
+            self.assertEqual(table.item(0, 2).text(), "别老反复擦")
+            self.assertEqual(table.item(1, 4).text(), "生成一张3:4竖版中文图文，第二张。")
+            self.assertEqual(len(window.image_page.selected_reference_paths()), 2)
         window.close()
 
     def test_hot_content_sends_to_video_generation(self):

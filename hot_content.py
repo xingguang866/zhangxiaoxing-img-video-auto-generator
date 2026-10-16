@@ -95,6 +95,7 @@ class OriginalContent:
     cover_title: str
     pages: list[dict]
     video_prompt: str = ""
+    image_copy_items: list[dict] = field(default_factory=list)
 
     def page_lines(self) -> list[str]:
         lines: list[str] = []
@@ -260,6 +261,161 @@ def analyze_reference_images(
             continue
         results.append(f"{description}\n{IMAGE_REPLICATION_NOTE}")
     return results
+
+
+def extract_image_texts(image_analysis: list[str]) -> list[str]:
+    """从逐张识别结果里取出“图中文字”部分。"""
+    texts: list[str] = []
+    for value in image_analysis:
+        match = re.search(r"图中文字[：:]\s*(.+)", str(value), re.S)
+        if not match:
+            texts.append("")
+            continue
+        block = match.group(1).split("二次原创方案")[0]
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        texts.append("\n".join(lines))
+    return texts
+
+
+def build_image_copy_prompt(
+    item: HotContentItem,
+    *,
+    image_analysis: list[str],
+    style: str,
+    product_info: str,
+    audience: str,
+) -> str:
+    image_lines = [
+        f"第 {index} 张原图：{str(value).strip()}"
+        for index, value in enumerate(image_analysis, start=1)
+    ]
+    return f"""
+下面是从小红书爆款图文里逐张识别出来的画面内容和图中文字。请逐张改写图片文案，并给出这一张图的生图提示词。
+
+必须遵守：
+1. 逐张处理，输出数量必须和识别结果数量一致。
+2. 图片文案要改写图中文字，保留原意和卖点，换一种说法重新表达，不得照抄原句。
+3. 图片文案要口语化、去 AI 味：像真人第一人称说话，短句为主，不用 emoji，不堆砌排比。
+4. 不得编造原图文字里没有的功效承诺，不写治愈、根治、保证有效。
+5. 内容风格：{style}。
+6. 生图提示词必须以改写后的图片文案为主体，并保持原图的画面主体、构图布局和整体风格接近，只做轻微细节变化，不要过度改款。
+7. 生图提示词要写明画面中出现的简体中文大字和排版位置，不出现英文、拼音和水印。
+
+爆款标题：{item.title}
+
+产品或服务：{product_info or "未填写"}
+
+目标人群：{audience or "未填写"}
+
+逐张识别结果：
+{chr(10).join(image_lines)}
+
+只返回 JSON，不要解释：
+{{
+  "images": [
+    {{
+      "index": 1,
+      "image_copy": "这一张图改写后的图片文案",
+      "image_prompt": "这一张图的生图提示词"
+    }}
+  ]
+}}
+""".strip()
+
+
+def normalize_image_copy_payload(payload: dict) -> list[dict]:
+    raw_items = payload.get("images")
+    if not isinstance(raw_items, list):
+        return []
+    results: list[dict] = []
+    for entry in raw_items:
+        if not isinstance(entry, dict):
+            continue
+        image_copy = str(
+            entry.get("image_copy") or entry.get("copy") or ""
+        ).strip()
+        image_prompt = str(entry.get("image_prompt") or "").strip()
+        if not image_copy and not image_prompt:
+            continue
+        results.append(
+            {
+                "index": len(results) + 1,
+                "image_copy": image_copy,
+                "image_prompt": image_prompt,
+            }
+        )
+    return results
+
+
+def mock_image_copy_plan(
+    item: HotContentItem,
+    *,
+    image_analysis: list[str],
+    style: str,
+) -> list[dict]:
+    texts = extract_image_texts(image_analysis)
+    plan: list[dict] = []
+    for index, value in enumerate(image_analysis, start=1):
+        source = (texts[index - 1] if index - 1 < len(texts) else "").replace(
+            "\n", " "
+        ).strip()
+        source = source or item.title or "图片文案"
+        plan.append(
+            {
+                "index": index,
+                "image_copy": f"{source}（{style}二次原创版）",
+                "image_prompt": (
+                    f"生成一张3:4竖版中文图文，第{index}张，"
+                    f"画面围绕“{source}”，保持原图的画面主体和构图布局，"
+                    "中文大字清晰可读，整体风格与原图接近。"
+                ),
+            }
+        )
+    return plan
+
+
+def generate_image_copy_plan(
+    item: HotContentItem,
+    *,
+    image_analysis: list[str],
+    style: str,
+    product_info: str,
+    audience: str,
+    text_model: str,
+    settings: dict,
+    client: APIMartClient | None = None,
+) -> list[dict]:
+    if not image_analysis:
+        return []
+    if settings.get("mock_mode"):
+        return mock_image_copy_plan(
+            item,
+            image_analysis=image_analysis,
+            style=style,
+        )
+    actual_client = client or APIMartClient(
+        APIConfig(
+            base_url=str(settings.get("base_url", "https://api.apib.ai/v1")),
+            api_key=str(settings.get("api_key", "")),
+        )
+    )
+    response = actual_client.chat_completion(
+        model=text_model or "gpt-4o-mini",
+        prompt=build_image_copy_prompt(
+            item,
+            image_analysis=image_analysis,
+            style=style,
+            product_info=product_info,
+            audience=audience,
+        ),
+        system_prompt=(
+            "你是资深中文新媒体图片文案编辑，擅长把画面文字改写成真人口语表达，"
+            "并据此给出图片生成提示词。"
+        ),
+        max_tokens=4000,
+        temperature=0.75,
+    )
+    return normalize_image_copy_payload(_extract_json(response))
 
 
 def shuffle_tags(
